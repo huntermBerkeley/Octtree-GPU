@@ -56,7 +56,7 @@ set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
 
 option(POGGERS_BUILD_TESTS "Configure CMake to build tests" OFF)
 
+ConfigureExecutable(cdpQuadtree "${CMAKE_CURRENT_SOURCE_DIR}/cdpQuadtree.cu" "${CMAKE_BINARY_DIR}")
 
-ConfigureExecutable(cdpQuadtree.cu "${CMAKE_CURRENT_SOURCE_DIR}/cdpQuadtree.cu" "${CMAKE_BINARY_DIR}")
-
+set_property(TARGET cdpQuadtree PROPERTY CUDA_SEPARABLE_COMPILATION ON)
 
