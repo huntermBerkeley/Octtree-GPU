@@ -748,6 +748,13 @@ bool cdpQuadtree(int warp_size)
 }
 
 
+__global__ void find_nn(Quadtree_node root, float2 query_point){
+    cooperative_groups::thread_block_tile<4> some_tile = cooperative_groups::tiled_partition<4>(cooperative_groups:: this_thread_block());
+    root.distance_bound(query_point, some_tile); //TODO add the second traversal
+
+}
+
+
 
 
 ////////////////////////////////////////////////////////////////////////////////
