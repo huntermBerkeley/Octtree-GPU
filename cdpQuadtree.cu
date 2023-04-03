@@ -13,12 +13,14 @@
 #include <thrust/device_vector.h>
 #include <thrust/host_vector.h>
 #include <cooperative_groups.h>
+#include <vector_functions.h>
 
 #include <poggers/allocators/slab_one_size.cuh>
 
 namespace cg = cooperative_groups;
 #include "helper_cuda.h"
 
+#define FAN_OUT 4
 
 
 
@@ -69,6 +71,7 @@ class Points
 {
         float *m_x;
         float *m_y;
+        int num_points = 8;
 
     public:
         // Constructor.
@@ -83,6 +86,10 @@ class Points
             return make_float2(m_x[idx], m_y[idx]);
         }
 
+        __host__ __device__ __forceinline__ int get_num_points(){
+            return num_points;
+        }
+
         // Set a point.
         __host__ __device__ __forceinline__ void set_point(int idx, const float2 &p)
         {
@@ -91,6 +98,7 @@ class Points
         }
 
         // Set the pointers.
+        // TODO change this to also set/update the num_points
         __host__ __device__ __forceinline__ void set(float *x, float *y)
         {
             m_x = x;
@@ -98,6 +106,11 @@ class Points
         }
 };
 
+//actually returns distance squared
+__device__ float distance_between(float2 one_point, float2 another_point){
+    return ((one_point.x - another_point.x)*(one_point.x - another_point.x)) + ((one_point.y - another_point.y) * (one_point.y - another_point.y));
+
+}
 
 class point
 {
@@ -176,6 +189,8 @@ class Quadtree_node
         Bounding_box m_bounding_box;
         // The range of points.
         int m_begin, m_end;
+        Quadtree_node* children; // Leaf has a nullptr here.
+        Points maybe_some_points;
 
 
     public:
@@ -229,6 +244,29 @@ class Quadtree_node
         {
             m_begin = begin;
             m_end = end;
+        }
+
+        __device__ float distance_bound(float2 query_point, cooperative_groups::thread_group g){
+            if (children == nullptr){
+                int num_pts = maybe_some_points.get_num_points();
+                assert(num_pts == 8);
+                float distances[4];
+                assert(g.size() == 4);
+                distances[g.thread_rank()] = min(distance_between(maybe_some_points.get_point(g.thread_rank()), query_point),
+                        distance_between(maybe_some_points.get_point(g.thread_rank()*2+1), query_point));
+                float mindist = 0.0;
+                g.sync();
+                for(int i = 0; i < 4; i++)
+                    mindist < distances[i] ? mindist = distances[i] : mindist = mindist;
+                return mindist;
+            } else{
+                for(int citer = 0; citer < FAN_OUT; citer++){
+                    if(children[citer].bounding_box().contains(query_point)){
+                        return children[citer].distance_bound(query_point, g);
+                    }
+                }
+            }
+            return -1;
         }
 };
 
@@ -961,6 +999,11 @@ bool cdpQuadtree(int warp_size)
 }
 
 
+__global__ void find_nn(Quadtree_node root, float2 query_point){
+    cooperative_groups::thread_block_tile<4> some_tile = cooperative_groups::tiled_partition<4>(cooperative_groups:: this_thread_block());
+    root.distance_bound(query_point, some_tile); //TODO add the second traversal
+
+}
 
 
 
