@@ -189,13 +189,13 @@ class Quadtree_node
             if (children == nullptr){
                 int num_pts = maybe_some_points.get_num_points();
                 assert(num_pts == 8);
-                float distances[8];
+                float distances[4];
                 assert(g.size() == 4);
                 distances[g.thread_rank()] = min(distance_between(maybe_some_points.get_point(g.thread_rank()), query_point),
                         distance_between(maybe_some_points.get_point(g.thread_rank()*2+1), query_point));
                 float mindist = 0.0;
                 g.sync();
-                for(int i = 0; i < 8; i++)
+                for(int i = 0; i < 4; i++)
                     mindist < distances[i] ? mindist = distances[i] : mindist = mindist;
                 return mindist;
             } else{
