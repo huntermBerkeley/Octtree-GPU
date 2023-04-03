@@ -46,6 +46,10 @@ CPMAddPackage(
 )
 
 
+add_library(quad_lib cdpQuadtree.cu)
+
+target_link_libraries(quad_lib INTERFACE poggers)
+
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -58,5 +62,10 @@ option(POGGERS_BUILD_TESTS "Configure CMake to build tests" OFF)
 
 ConfigureExecutable(cdpQuadtree "${CMAKE_CURRENT_SOURCE_DIR}/cdpQuadtree.cu" "${CMAKE_BINARY_DIR}")
 
+ConfigureExecutable(test "${CMAKE_CURRENT_SOURCE_DIR}/test.cu" "${CMAKE_BINARY_DIR}")
+
 set_property(TARGET cdpQuadtree PROPERTY CUDA_SEPARABLE_COMPILATION ON)
+
+
+target_link_libraries(test PRIVATE quad_lib)
 
