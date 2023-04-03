@@ -98,6 +98,19 @@ class Points
         }
 };
 
+
+class point
+{
+
+    float x;
+    float y;
+
+    __host__ __device__ point(float ext_x, float ext_y): x(ext_x), y(ext_y) {}
+
+    __host__ __device__ point(): x(0), y(0) {}
+
+}
+
 ////////////////////////////////////////////////////////////////////////////////
 // A 2D bounding box
 ////////////////////////////////////////////////////////////////////////////////
@@ -233,7 +246,7 @@ class quadtree_node_v2
     uint64_t metadata;
 
     //8
-    Point * my_points;
+    point * my_points;
 
     //32
     my_type * children[4];
@@ -257,15 +270,7 @@ class quadtree_node_v2
     // m_p_max.y = max_y;
 
 
-    //1) child is not nullptr
-    //
-    __device__ bool is_correct_child(int child_id, Point new_item){
-
-        //do a global load
-        my_type * child = poggers::utils::ldca(&children[child_id]);
-
-
-        //float my_min_x = my_bounding_box.
+    __device__ Bounding_box get_child_bounding_box(int child_id){
 
         Bounding_box child_box = my_bounding_box;
 
@@ -279,6 +284,27 @@ class quadtree_node_v2
         child_box.m_p_max.x = (!right_y)*center.x + (right_y)*child_box.m_p_max.x;
         child_box.m_p_min.y = (above_x)*center.y + (!above_x)*child_box.m_p_min.y;
         child_box.m_p_max.y = (!above_x)*center.y + (above_x)*child_box.m_p_max.y;
+
+
+        return child_box;
+
+
+
+    }
+
+    //1) child is not nullptr
+    //
+    __device__ bool is_correct_child(int child_id, Point new_item){
+
+        //do a global load
+        my_type * child = poggers::utils::ldca(&children[child_id]);
+
+
+        //float my_min_x = my_bounding_box.
+
+
+        Bounding_box child_box = get_child_bounding_box(child_box);
+
 
         return child_box.contains(new_item.get_point());
 
@@ -312,11 +338,84 @@ class quadtree_node_v2
 
         int leader = __ffs(valid)-1;
 
-        if (leader == -1){
+        if (children[leader] == nullptr){
+            //add new child
+            attach_new_child(insert_tile, leader);
 
-            //try to add new pointer.
+        }  
+
+        return children[leader]->insert(insert_tile, new_item);
+
+
+    }
+
+    __device__ void attach_new_child(cg::tiled_partition<4> insert_tile, int leader){
+
+        void * allocation;
+
+        if (insert_tile.thread_rank() < 2){
+
+            allocation = global_allocator.malloc();
+
+            if (allocation == nullptr){
+                printf("Out of memory\n");
+            }
+
         }
 
+        my_type * child = insert_tile.shfl((my_type * ) allocation, 0);
+
+        //insert_tile.sync();
+
+        if (insert_tile.thread_rank() == 1){
+
+            atomicExch((unsigned long long int *)&child->my_points, (unsigned long long int )(allocation));
+
+        }
+
+
+        //set the bounding box and null out other stuff
+
+
+        if (insert_tile.thread_rank() == 0){
+
+            child->my_bounding_box = get_child_bounding_box(leader);
+
+            for (int i = 0; i < 4; i++){
+
+                child->children[i] = nullptr;
+            }
+
+        }  else if (insert_tile.thread_rank() == 1){
+
+            for (int i = 0; i < 8; i ++){
+
+                child->points[i] = (point) ~0ULL;
+
+            }
+
+        }
+
+
+
+        //complete init.
+        bool swapped = false;
+
+        if (insert_tile.thread_rank() == 0){
+            swapped = (atomicCAS((unsigned long long int *)&children[leader], (unsigned long long int)0ULL, (unsigned long long int)child) == 0ULL);
+        }
+
+        bool success = insert_tile.ballot(swapped);
+
+        if (!success){
+
+            if (insert_tile.thread_rank() < 2){
+
+                global_allocator.free(allocation);
+
+            }
+
+        }
 
     }
 
