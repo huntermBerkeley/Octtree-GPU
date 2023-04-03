@@ -13,56 +13,9 @@
 #include <thrust/device_vector.h>
 #include <thrust/host_vector.h>
 #include <cooperative_groups.h>
-#include <vector_functions.h>
-
-#include <poggers/allocators/slab_one_size.cuh>
 
 namespace cg = cooperative_groups;
 #include "helper_cuda.h"
-
-#define FAN_OUT 4
-
-
-
-
-//global vals
-
-using alloc_type = one_size_slab_allocator<4>;
-
-__device__ alloc_type global_allocator;
-
-
-
-__host__ void boot_allocator(uint64_t bytes_available, uint64_t alloc_size){
-
-    alloc_type * local_version = alloc_type::generate_on_device(bytes_available, alloc_size);
-
-    if (local_version == nullptr){
-        printf("Allocator failed to acquire memory.\n");
-    }
-
-    cudaMemcpyToSymbol(global_allocator, local_version, sizeof(alloc_type));
-
-    cudaFree(local_version);
-
-    cudaDeviceSynchronize();
-
-}
-
-
-__host__ void free_allocator(){
-
-    alloc_type * local_version;
-
-    cudaMalloc((void **)&local_version, sizeof(alloc_type));
-
-    cudaMemcpyFromSymbol(local_version, global_allocator, sizeof(alloc_type));
-
-    alloc_type::free_on_device(local_version);
-
-    cudaDeviceSynchronize();
-
-}
 
 ////////////////////////////////////////////////////////////////////////////////
 // A structure of 2D points (structure of arrays).
@@ -71,7 +24,6 @@ class Points
 {
         float *m_x;
         float *m_y;
-        int num_points = 8;
 
     public:
         // Constructor.
@@ -86,10 +38,6 @@ class Points
             return make_float2(m_x[idx], m_y[idx]);
         }
 
-        __host__ __device__ __forceinline__ int get_num_points(){
-            return num_points;
-        }
-
         // Set a point.
         __host__ __device__ __forceinline__ void set_point(int idx, const float2 &p)
         {
@@ -98,7 +46,6 @@ class Points
         }
 
         // Set the pointers.
-        // TODO change this to also set/update the num_points
         __host__ __device__ __forceinline__ void set(float *x, float *y)
         {
             m_x = x;
@@ -106,37 +53,16 @@ class Points
         }
 };
 
-//actually returns distance squared
-__device__ float distance_between(float2 one_point, float2 another_point){
-    return ((one_point.x - another_point.x)*(one_point.x - another_point.x)) + ((one_point.y - another_point.y) * (one_point.y - another_point.y));
-
-}
-
-class point
-{
-
-    float x;
-    float y;
-
-    __host__ __device__ point(float ext_x, float ext_y): x(ext_x), y(ext_y) {}
-
-    __host__ __device__ point(): x(0), y(0) {}
-
-}
-
 ////////////////////////////////////////////////////////////////////////////////
 // A 2D bounding box
 ////////////////////////////////////////////////////////////////////////////////
 class Bounding_box
 {
         // Extreme points of the bounding box.
-
-
-    public:
-
         float2 m_p_min;
         float2 m_p_max;
 
+    public:
         // Constructor. Create a unit box.
         __host__ __device__ Bounding_box()
         {
@@ -189,8 +115,6 @@ class Quadtree_node
         Bounding_box m_bounding_box;
         // The range of points.
         int m_begin, m_end;
-        Quadtree_node* children; // Leaf has a nullptr here.
-        Points maybe_some_points;
 
 
     public:
@@ -245,220 +169,7 @@ class Quadtree_node
             m_begin = begin;
             m_end = end;
         }
-
-        __device__ float distance_bound(float2 query_point, cooperative_groups::thread_group g){
-            if (children == nullptr){
-                int num_pts = maybe_some_points.get_num_points();
-                assert(num_pts == 8);
-                float distances[4];
-                assert(g.size() == 4);
-                distances[g.thread_rank()] = min(distance_between(maybe_some_points.get_point(g.thread_rank()), query_point),
-                        distance_between(maybe_some_points.get_point(g.thread_rank()*2+1), query_point));
-                float mindist = 0.0;
-                g.sync();
-                for(int i = 0; i < 4; i++)
-                    mindist < distances[i] ? mindist = distances[i] : mindist = mindist;
-                return mindist;
-            } else{
-                for(int citer = 0; citer < FAN_OUT; citer++){
-                    if(children[citer].bounding_box().contains(query_point)){
-                        return children[citer].distance_bound(query_point, g);
-                    }
-                }
-            }
-            return -1;
-        }
 };
-
-
-
-class quadtree_node_v2 
-{
-
-    using my_type = quadtree_node_v2;
-
-    //data types needed
-    //1) bounding box
-
-    //8
-    uint64_t metadata;
-
-    //8
-    point * my_points;
-
-    //32
-    my_type * children[4];
-
-    //16
-    Bounding_box my_bounding_box;
-
-    __device__ void set_bounding_box(float min_x, float min_y, float max_x, float max_y){
-
-        my_bounding_box(min_x, min_y, max_x, max_y);
-
-    }
-
-
-
-
-
-    // m_p_min.x = min_x;
-    // m_p_min.y = min_y;
-    // m_p_max.x = max_x;
-    // m_p_max.y = max_y;
-
-
-    __device__ Bounding_box get_child_bounding_box(int child_id){
-
-        Bounding_box child_box = my_bounding_box;
-
-        float2 center = my_bounding_box.compute_center();
-
-
-        bool above_x = (child_id / 2) == 0;
-        bool right_y = (child_id % 2) == 1;
-
-        child_box.m_p_min.x = (right_y)*center.x + (!right_y)*child_box.m_p_min.x;
-        child_box.m_p_max.x = (!right_y)*center.x + (right_y)*child_box.m_p_max.x;
-        child_box.m_p_min.y = (above_x)*center.y + (!above_x)*child_box.m_p_min.y;
-        child_box.m_p_max.y = (!above_x)*center.y + (above_x)*child_box.m_p_max.y;
-
-
-        return child_box;
-
-
-
-    }
-
-    //1) child is not nullptr
-    //
-    __device__ bool is_correct_child(int child_id, Point new_item){
-
-        //do a global load
-        my_type * child = poggers::utils::ldca(&children[child_id]);
-
-
-        //float my_min_x = my_bounding_box.
-
-
-        Bounding_box child_box = get_child_bounding_box(child_box);
-
-
-        return child_box.contains(new_item.get_point());
-
-    }
-
-    __device__ bool insert(cg::tiled_partition<4> insert_tile, Point new_item){
-
-
-        //first, find valid child
-
-        if (my_points != nullptr){
-
-            //not leaf node
-            add_to_child(insert_tile, new_item);
-            return true;
-
-
-        }
-
-        bool is_valid = is_correct_child(insert_tile.thread_rank(), new_item);
-
-        auto valid = insert_tile.ballot(is_valid);
-
-
-        #if DEBUG_ASSERTS
-        if (__popc(valid)!=1){
-            printf("Two children to recurse to, boundaries are wrong\n");
-        }
-        
-        #endif
-
-        int leader = __ffs(valid)-1;
-
-        if (children[leader] == nullptr){
-            //add new child
-            attach_new_child(insert_tile, leader);
-
-        }  
-
-        return children[leader]->insert(insert_tile, new_item);
-
-
-    }
-
-    __device__ void attach_new_child(cg::tiled_partition<4> insert_tile, int leader){
-
-        void * allocation;
-
-        if (insert_tile.thread_rank() < 2){
-
-            allocation = global_allocator.malloc();
-
-            if (allocation == nullptr){
-                printf("Out of memory\n");
-            }
-
-        }
-
-        my_type * child = insert_tile.shfl((my_type * ) allocation, 0);
-
-        //insert_tile.sync();
-
-        if (insert_tile.thread_rank() == 1){
-
-            atomicExch((unsigned long long int *)&child->my_points, (unsigned long long int )(allocation));
-
-        }
-
-
-        //set the bounding box and null out other stuff
-
-
-        if (insert_tile.thread_rank() == 0){
-
-            child->my_bounding_box = get_child_bounding_box(leader);
-
-            for (int i = 0; i < 4; i++){
-
-                child->children[i] = nullptr;
-            }
-
-        }  else if (insert_tile.thread_rank() == 1){
-
-            for (int i = 0; i < 8; i ++){
-
-                child->points[i] = (point) ~0ULL;
-
-            }
-
-        }
-
-
-
-        //complete init.
-        bool swapped = false;
-
-        if (insert_tile.thread_rank() == 0){
-            swapped = (atomicCAS((unsigned long long int *)&children[leader], (unsigned long long int)0ULL, (unsigned long long int)child) == 0ULL);
-        }
-
-        bool success = insert_tile.ballot(swapped);
-
-        if (!success){
-
-            if (insert_tile.thread_rank() < 2){
-
-                global_allocator.free(allocation);
-
-            }
-
-        }
-
-    }
-
-
-}
 
 ////////////////////////////////////////////////////////////////////////////////
 // Algorithm parameters.
@@ -997,15 +708,6 @@ bool cdpQuadtree(int warp_size)
 
     return ok;
 }
-
-
-__global__ void find_nn(Quadtree_node root, float2 query_point){
-    cooperative_groups::thread_block_tile<4> some_tile = cooperative_groups::tiled_partition<4>(cooperative_groups:: this_thread_block());
-    root.distance_bound(query_point, some_tile); //TODO add the second traversal
-
-}
-
-
 
 ////////////////////////////////////////////////////////////////////////////////
 // Main entry point.
