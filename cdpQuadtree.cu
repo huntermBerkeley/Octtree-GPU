@@ -25,7 +25,7 @@ namespace cg = cooperative_groups;
 
 //global vals
 
-using alloc_type = one_size_slab_allocator<4>;
+using alloc_type = poggers::allocators::one_size_slab_allocator<4>;
 
 __device__ alloc_type global_allocator;
 
@@ -99,7 +99,7 @@ class Points
 };
 
 
-class point
+struct point
 {
 
     float x;
@@ -109,7 +109,13 @@ class point
 
     __host__ __device__ point(): x(0), y(0) {}
 
-}
+    __device__ float2 get_point(){
+
+        return make_float2(x,y);
+
+    }
+
+};
 
 ////////////////////////////////////////////////////////////////////////////////
 // A 2D bounding box
@@ -256,7 +262,7 @@ class quadtree_node_v2
 
     __device__ void set_bounding_box(float min_x, float min_y, float max_x, float max_y){
 
-        my_bounding_box(min_x, min_y, max_x, max_y);
+        my_bounding_box.set(min_x, min_y, max_x, max_y);
 
     }
 
@@ -274,7 +280,8 @@ class quadtree_node_v2
 
         Bounding_box child_box = my_bounding_box;
 
-        float2 center = my_bounding_box.compute_center();
+        float2 center;
+        my_bounding_box.compute_center(center);
 
 
         bool above_x = (child_id / 2) == 0;
@@ -294,23 +301,23 @@ class quadtree_node_v2
 
     //1) child is not nullptr
     //
-    __device__ bool is_correct_child(int child_id, Point new_item){
+    __device__ bool is_correct_child(int child_id, point new_item){
 
         //do a global load
-        my_type * child = poggers::utils::ldca(&children[child_id]);
+        my_type * child = (my_type *) poggers::utils::ldca((uint64_t *)&children[child_id]);
 
 
         //float my_min_x = my_bounding_box.
 
 
-        Bounding_box child_box = get_child_bounding_box(child_box);
+        Bounding_box child_box = get_child_bounding_box(child_id);
 
 
         return child_box.contains(new_item.get_point());
 
     }
 
-    __device__ bool insert(cg::tiled_partition<4> insert_tile, Point new_item){
+    __device__ bool insert(cg::thread_block_tile<4> insert_tile, point new_item){
 
 
         //first, find valid child
@@ -349,7 +356,7 @@ class quadtree_node_v2
 
     }
 
-    __device__ void attach_new_child(cg::tiled_partition<4> insert_tile, int leader){
+    __device__ void attach_new_child(cg::thread_block_tile<4> insert_tile, int leader){
 
         void * allocation;
 
@@ -390,7 +397,8 @@ class quadtree_node_v2
 
             for (int i = 0; i < 8; i ++){
 
-                child->points[i] = (point) ~0ULL;
+                uint64_t * def_a_ptr = (uint64_t *) &child->my_points[i];
+                *def_a_ptr = ~0ULL;
 
             }
 
@@ -420,7 +428,7 @@ class quadtree_node_v2
     }
 
 
-}
+};
 
 ////////////////////////////////////////////////////////////////////////////////
 // Algorithm parameters.

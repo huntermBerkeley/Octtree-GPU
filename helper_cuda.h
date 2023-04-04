@@ -563,15 +563,15 @@ static const char *_cudaGetErrorEnum(NppStatus error) {
 }
 #endif
 
-template <typename T>
-void check(T result, char const *const func, const char *const file,
-           int const line) {
-  if (result) {
-    fprintf(stderr, "CUDA error at %s:%d code=%d(%s) \"%s\" \n", file, line,
-            static_cast<unsigned int>(result), _cudaGetErrorEnum(result), func);
-    exit(EXIT_FAILURE);
-  }
-}
+// template <typename T>
+// void check(T result, char const *const func, const char *const file,
+//            int const line) {
+//   if (result) {
+//     fprintf(stderr, "CUDA error at %s:%d code=%d(%s) \"%s\" \n", file, line,
+//             static_cast<unsigned int>(result), _cudaGetErrorEnum(result), func);
+//     exit(EXIT_FAILURE);
+//   }
+// }
 
 #ifdef __DRIVER_TYPES_H__
 // This will output the proper CUDA error strings in the event
