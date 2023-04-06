@@ -246,28 +246,14 @@ class Quadtree_node
             m_end = end;
         }
 
-        __device__ float distance_bound(float2 query_point, cooperative_groups::thread_group g){
-            if (children == nullptr){
-                int num_pts = maybe_some_points.get_num_points();
-                assert(num_pts == 8);
-                float distances[4];
-                assert(g.size() == 4);
-                distances[g.thread_rank()] = min(distance_between(maybe_some_points.get_point(g.thread_rank()), query_point),
-                        distance_between(maybe_some_points.get_point(g.thread_rank()*2+1), query_point));
-                float mindist = 0.0;
-                g.sync();
-                for(int i = 0; i < 4; i++)
-                    mindist < distances[i] ? mindist = distances[i] : mindist = mindist;
-                return mindist;
-            } else{
-                for(int citer = 0; citer < FAN_OUT; citer++){
-                    if(children[citer].bounding_box().contains(query_point)){
-                        return children[citer].distance_bound(query_point, g);
-                    }
+        __device__ __forceinline__ Quadtree_node* get_child(float2 some_point){
+            for(int citer = 0; citer < FAN_OUT; citer++){
+                if(children[citer].bounding_box().contains(some_point)){
+                    return &children[citer];
                 }
             }
-            return -1;
         }
+
 };
 
 
@@ -456,6 +442,23 @@ class quadtree_node_v2
         }
 
     }
+    __device__ float distance_bound(point query_point, cooperative_groups::thread_group g){
+            if (children == nullptr){
+                int num_pts = maybe_some_points.get_num_points();
+                float mindist = get_minimum_distance(query_point, g, nullptr);
+                return mindist;
+            } else{
+                for(int citer = 0; citer < 4; citer++){
+                    if (children+(citer*sizeof(my_type)) == NULL){
+                        continue;
+                    }
+                    if(children[citer].bounding_box().contains(query_point)){
+                        return children[citer].distance_bound(query_point, g);
+                    }
+                }
+            }
+            return -1;
+        }
 
 
 }
