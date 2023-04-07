@@ -114,7 +114,6 @@ struct point
         return make_float2(x,y);
 
     }
-
 };
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -317,20 +316,50 @@ class quadtree_node_v2
 
     }
 
+    __device__ bool add_to_leaf(int child_id, point new_item){
+		for (int i = insert_tile.thread_rank(); i < 8; i+= insert_tile.size()){
+
+				bool ballot = false;
+
+				if (my_points[i] == NULL){
+					ballot = true;
+				}
+
+				auto ballot_result = insert_tile.ballot(ballot);
+
+				while (ballot_result){
+
+					ballot = false;
+
+					const auto leader = __ffs(ballot_result) -1;
+
+					if (leader == insert_tile.thread_rank()){
+                        //  atomicCAS(int* address, int compare, int val);
+						ballot = atomicCAS((unsigned long long int *) &my_points[leader], ~0ULL, (unsigned long long int) new_item) == ~0ULL;
+            
+					}
+
+					if (insert_tile.ballot(ballot)) return true;
+
+					ballot_result ^= 1UL << leader;
+
+				}
+		}
+
+        return false;          
+    }
+
     __device__ bool insert(cg::thread_block_tile<4> insert_tile, point new_item){
 
 
-        //first, find valid child
-
         if (my_points != nullptr){
-
-            //not leaf node
-            add_to_child(insert_tile, new_item);
-            return true;
-
-
+            return add_to_leaf(insert_tile, new_item);
         }
 
+        // leaf full, create children
+
+        /*
+        // first, find valid child
         bool is_valid = is_correct_child(insert_tile.thread_rank(), new_item);
 
         auto valid = insert_tile.ballot(is_valid);
@@ -352,8 +381,7 @@ class quadtree_node_v2
         }  
 
         return children[leader]->insert(insert_tile, new_item);
-
-
+        */
     }
 
     __device__ void attach_new_child(cg::thread_block_tile<4> insert_tile, int leader){
