@@ -21,6 +21,7 @@ namespace cg = cooperative_groups;
 #include "helper_cuda.h"
 
 #define FAN_OUT 4
+#define FLOAT_UPPER float(1<<30)
 
 
 
@@ -115,6 +116,7 @@ __device__ float distance_between(float2 one_point, float2 another_point){
 class point
 {
 
+    public:
     float x;
     float y;
 
@@ -175,6 +177,12 @@ class Bounding_box
             m_p_min.y = min_y;
             m_p_max.x = max_x;
             m_p_max.y = max_y;
+        }
+        // Returns the minimum possible distance between the box and the point.
+        // This might not even be a valid distance, but the valid distance will surely be greater than this.
+        __host__ __device__ float distance_between(point some_point){
+
+            float mindist = 1
         }
 };
 
@@ -442,10 +450,10 @@ class quadtree_node_v2
         }
 
     }
-    __device__ float distance_bound(point query_point, cooperative_groups::thread_group g){
+    __device__ float distance_bound(point query_point, cooperative_groups::thread_group g, my_type& result){
             if (children == nullptr){
                 int num_pts = maybe_some_points.get_num_points();
-                float mindist = get_minimum_distance(query_point, g, nullptr);
+                float mindist = get_minimum_distance(query_point, g, result);
                 return mindist;
             } else{
                 for(int citer = 0; citer < 4; citer++){
@@ -458,7 +466,33 @@ class quadtree_node_v2
                 }
             }
             return -1;
+    }
+
+    __device__ point check_neighbouring_subtrees(point query_point, cooperative_groups::thread_group g, float bound){
+        float mindist = FLOAT_UPPER;
+        point minpoint;
+        point maybe_points[4]
+        for(int citer = 0; citer < 4; citer++){
+            maybe_points[citer] = NULL;
+            if(children + (citer*sizeof(my_type)) != NULL){
+                if(is_correct_child(citer, query_point)) continue;
+                if(get_child_bounding_box(citer).distance_between(query_point) < bound){
+                    cooperative_groups::thread_block_tile<g.size() / 2> next_tile = cooperative_groups::tiled_partition<g.size() / 2>(cooperative_groups:: this_thread_block());
+                    maybe_points[citer] = check_neighbouring_subtrees(query_point, next_tile, bound);
+                }
+            }
         }
+        for(int citer = 0; citer < 4; citer++){
+            if((maybe_points + (citer*sizeof(point)) != NULL) && !(maybe_points[citer].x == 0 && maybe_points[citer.y] == 0)){
+                //You went down this child, and found a point that is not (0,0)
+                float thisdist = distance_between(maybe_points[citer], query_point);
+                if(thisdist < mindist){
+                    minpoint = maybe_points[citer];
+                }
+            }
+        }
+        return minpoint
+    }
 
 
 }
@@ -1002,10 +1036,14 @@ bool cdpQuadtree(int warp_size)
 }
 
 
-__global__ void find_nn(Quadtree_node root, float2 query_point){
+__global__ void find_nn(Quadtree_node root, float2 query_point, point& result){
     cooperative_groups::thread_block_tile<4> some_tile = cooperative_groups::tiled_partition<4>(cooperative_groups:: this_thread_block());
-    root.distance_bound(query_point, some_tile); //TODO add the second traversal
-
+    float mindist = root.distance_bound(query_point, some_tile, result); //TODO add the second traversal
+    Quadtree_node improved_result;
+    point another_point = root.check_neighbouring_subtrees(query_point, some_tile, improved_result, mindist);
+    if(!(another_point.x == 0 && another_point.y == 0) && distance_between(query_point, another_point) < mindist){
+        result = another_point;
+    }
 }
 
 
