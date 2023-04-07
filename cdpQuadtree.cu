@@ -27,7 +27,7 @@ namespace cg = cooperative_groups;
 
 //global vals
 
-using alloc_type = one_size_slab_allocator<4>;
+using alloc_type = poggers::allocators::one_size_slab_allocator<4>;
 
 __device__ alloc_type global_allocator;
 
@@ -112,7 +112,7 @@ __device__ float distance_between(float2 one_point, float2 another_point){
 
 }
 
-class point
+struct point
 {
 
     float x;
@@ -122,7 +122,26 @@ class point
 
     __host__ __device__ point(): x(0), y(0) {}
 
-}
+    __host__ __device__ void set_point(float ext_x, float ext_y){
+        x = ext_x;
+        y = ext_y;
+    }
+
+    __device__ float2 get_point(){
+
+        return make_float2(x,y);
+
+    }
+
+    __device__ float distance(point alt_point){
+
+        return sqrt( (x-alt_point.x)*(x-alt_point.x) + (y-alt_point.y)*(y-alt_point.y) );
+
+
+    }
+
+
+};
 
 ////////////////////////////////////////////////////////////////////////////////
 // A 2D bounding box
@@ -258,7 +277,7 @@ class Quadtree_node
 
 
 
-class quadtree_node_v2 
+struct quadtree_node_v2 
 {
 
     using my_type = quadtree_node_v2;
@@ -273,6 +292,10 @@ class quadtree_node_v2
     point * my_points;
 
     //32
+    //children are indexed in clockwise order starting from the top left 
+    // 0 1
+    // 3 2
+    //set bounding boxes accordingly.
     my_type * children[4];
 
     //16
@@ -280,13 +303,19 @@ class quadtree_node_v2
 
     __device__ void set_bounding_box(float min_x, float min_y, float max_x, float max_y){
 
-        my_bounding_box(min_x, min_y, max_x, max_y);
+        my_bounding_box.set(min_x, min_y, max_x, max_y);
 
     }
 
 
 
+    __device__ float get_min_distance(cg::thread_group query_group, point comp_point, point & output){
 
+
+        if (my_points == nullptr) return 2; 
+
+
+    }
 
     // m_p_min.x = min_x;
     // m_p_min.y = min_y;
@@ -298,7 +327,8 @@ class quadtree_node_v2
 
         Bounding_box child_box = my_bounding_box;
 
-        float2 center = my_bounding_box.compute_center();
+        float2 center;
+        my_bounding_box.compute_center(center);
 
 
         bool above_x = (child_id / 2) == 0;
@@ -318,36 +348,66 @@ class quadtree_node_v2
 
     //1) child is not nullptr
     //
-    __device__ bool is_correct_child(int child_id, Point new_item){
+    __device__ bool is_correct_child(int child_id, point new_item){
 
         //do a global load
-        my_type * child = poggers::utils::ldca(&children[child_id]);
+        my_type * child = (my_type *) poggers::utils::ldca((uint64_t *)&children[child_id]);
 
 
         //float my_min_x = my_bounding_box.
 
 
-        Bounding_box child_box = get_child_bounding_box(child_box);
+        Bounding_box child_box = get_child_bounding_box(child_id);
 
 
         return child_box.contains(new_item.get_point());
 
     }
 
-    __device__ bool insert(cg::tiled_partition<4> insert_tile, Point new_item){
+    __device__ bool add_to_leaf(int child_id, point new_item){
+		for (int i = insert_tile.thread_rank(); i < 8; i+= insert_tile.size()){
 
+				bool ballot = false;
 
-        //first, find valid child
+				if (my_points[i] == NULL){
+					ballot = true;
+				}
+
+				auto ballot_result = insert_tile.ballot(ballot);
+
+				while (ballot_result){
+
+					ballot = false;
+
+					const auto leader = __ffs(ballot_result) -1;
+
+					if (leader == insert_tile.thread_rank()){
+                        //  atomicCAS(int* address, int compare, int val);
+						ballot = atomicCAS((unsigned long long int *) &my_points[leader], ~0ULL, (unsigned long long int) new_item) == ~0ULL;
+            
+					}
+
+					if (insert_tile.ballot(ballot)) return true;
+
+					ballot_result ^= 1UL << leader;
+
+				}
+		}
+
+        return false;          
+    }
+
+    __device__ bool insert(cg::thread_block_tile<4> insert_tile, point new_item){
+
 
         if (my_points != nullptr){
-
-            //not leaf node
-            add_to_child(insert_tile, new_item);
-            return true;
-
-
+            return add_to_leaf(insert_tile, new_item);
         }
 
+        // leaf full, create children
+
+        /*
+        // first, find valid child
         bool is_valid = is_correct_child(insert_tile.thread_rank(), new_item);
 
         auto valid = insert_tile.ballot(is_valid);
@@ -369,11 +429,10 @@ class quadtree_node_v2
         }  
 
         return children[leader]->insert(insert_tile, new_item);
-
-
+        */
     }
 
-    __device__ void attach_new_child(cg::tiled_partition<4> insert_tile, int leader){
+    __device__ void attach_new_child(cg::thread_block_tile<4> insert_tile, int leader){
 
         void * allocation;
 
@@ -414,7 +473,8 @@ class quadtree_node_v2
 
             for (int i = 0; i < 8; i ++){
 
-                child->points[i] = (point) ~0ULL;
+                uint64_t * def_a_ptr = (uint64_t *) &child->my_points[i];
+                *def_a_ptr = ~0ULL;
 
             }
 
@@ -461,7 +521,7 @@ class quadtree_node_v2
         }
 
 
-}
+};
 
 ////////////////////////////////////////////////////////////////////////////////
 // Algorithm parameters.
@@ -1008,6 +1068,52 @@ __global__ void find_nn(Quadtree_node root, float2 query_point){
 
 }
 
+__global__ void init_tree(quadtree_node_v2 ** root){
+
+
+    uint64_t tid = threadIdx.x + blockIdx.x*blockDim.x;
+
+    if (tid != 0) return;
+
+    quadtree_node_v2 * new_node = (quadtree_node_v2 *) global_allocator.malloc();
+
+
+    void * memory = global_allocator.malloc();
+
+    atomicExch((unsigned long long int *)&new_node->my_points, (unsigned long long int )(memory));
+
+    if (new_node == nullptr || memory == nullptr) printf("Allocator could not request!\n");
+
+
+
+
+}
+    
+
+__global__ void insert_points(quadtree_node_v2 ** head, point * points, uint64_t npoints){
+
+
+    auto my_thread_block = cg::this_thread_block();
+
+    auto my_tile = cg::tiled_partition<4>(my_thread_block);
+
+    //precondition - make blockdim /4
+
+    if (blockDim.x % 4 != 0){
+        printf("Block dim %llu must be divisible by 4\n", blockDim.x);
+
+        return;
+    }
+
+
+    uint64_t tid = my_tile.meta_group_rank()+ blockIdx.x*my_tile.meta_group_size();
+
+    if (tid >= npoints) return;
+
+
+    head[0]->insert(my_tile, points[tid]);
+
+}
 
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -1015,24 +1121,42 @@ __global__ void find_nn(Quadtree_node root, float2 query_point){
 ////////////////////////////////////////////////////////////////////////////////
 int main(int argc, char **argv)
 {
-    // Find/set the device.
-    // The test requires an architecture SM35 or greater (CDP capable).
-    int cuda_device = findCudaDevice(argc, (const char **)argv);
-    cudaDeviceProp deviceProps;
-    checkCudaErrors(cudaGetDeviceProperties(&deviceProps, cuda_device));
-    int cdpCapable = (deviceProps.major == 3 && deviceProps.minor >= 5) || deviceProps.major >=4;
 
-    printf("GPU device %s has compute capabilities (SM %d.%d)\n", deviceProps.name, deviceProps.major, deviceProps.minor);
 
-    if (!cdpCapable)
-    {
-        std::cerr << "cdpQuadTree requires SM 3.5 or higher to use CUDA Dynamic Parallelism.  Exiting...\n" << std::endl;
-        exit(EXIT_WAIVED);
+    boot_allocator(8ULL*1024*1024*1024, 64);
+    quadtree_node_v2 ** head;
+
+    cudaMalloc((void **)&head, sizeof(quadtree_node_v2 *));
+
+
+    init_tree<<<1,1>>>(head);
+
+
+    cudaDeviceSynchronize();
+
+
+    point * points;
+
+    cudaMallocManaged((void **)&points, sizeof(point)*7);
+
+    cudaDeviceSynchronize();
+
+
+    for (int i = 0; i < 7; i++){
+
+        points[i].set_point(1.0*i/8, 1.0-1.0*i/8);
+
     }
 
-    bool ok = cdpQuadtree(deviceProps.warpSize);
 
-    return (ok ? EXIT_SUCCESS : EXIT_FAILURE);
+    insert_points<<<1,28>>>(head, points, 7);
+
+
+    cudaFree(head);
+
+
+    free_allocator();
+
 }
 
 
