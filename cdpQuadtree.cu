@@ -109,9 +109,22 @@ struct point
 
     __host__ __device__ point(): x(0), y(0) {}
 
+    __host__ __device__ void set_point(float ext_x, float ext_y){
+        x = ext_x;
+        y = ext_y;
+    }
+
     __device__ float2 get_point(){
 
         return make_float2(x,y);
+
+    }
+
+
+    __device__ float distance(point alt_point){
+
+        return sqrt( (x-alt_point.x)*(x-alt_point.x) + (y-alt_point.y)*(y-alt_point.y) );
+
 
     }
 
@@ -240,7 +253,7 @@ class Quadtree_node
 
 
 
-class quadtree_node_v2 
+struct quadtree_node_v2 
 {
 
     using my_type = quadtree_node_v2;
@@ -255,6 +268,10 @@ class quadtree_node_v2
     point * my_points;
 
     //32
+    //children are indexed in clockwise order starting from the top left 
+    // 0 1
+    // 3 2
+    //set bounding boxes accordingly.
     my_type * children[4];
 
     //16
@@ -268,7 +285,13 @@ class quadtree_node_v2
 
 
 
+    __device__ float get_min_distance(cg::thread_group query_group, point comp_point, point & output){
 
+
+        if (my_points == nullptr) return 2; 
+
+
+    }
 
     // m_p_min.x = min_x;
     // m_p_min.y = min_y;
@@ -970,6 +993,52 @@ bool cdpQuadtree(int warp_size)
 
 
 
+__global__ void init_tree(quadtree_node_v2 ** root){
+
+
+    uint64_t tid = threadIdx.x + blockIdx.x*blockDim.x;
+
+    if (tid != 0) return;
+
+    quadtree_node_v2 * new_node = (quadtree_node_v2 *) global_allocator.malloc();
+
+
+    void * memory = global_allocator.malloc();
+
+    atomicExch((unsigned long long int *)&new_node->my_points, (unsigned long long int )(memory));
+
+    if (new_node == nullptr || memory == nullptr) printf("Allocator could not request!\n");
+
+
+
+
+}
+    
+
+__global__ void insert_points(quadtree_node_v2 ** head, point * points, uint64_t npoints){
+
+
+    auto my_thread_block = cg::this_thread_block();
+
+    auto my_tile = cg::tiled_partition<4>(my_thread_block);
+
+    //precondition - make blockdim /4
+
+    if (blockDim.x % 4 != 0){
+        printf("Block dim %llu must be divisible by 4\n", blockDim.x);
+
+        return;
+    }
+
+
+    uint64_t tid = my_tile.meta_group_rank()+ blockIdx.x*my_tile.meta_group_size();
+
+    if (tid >= npoints) return;
+
+
+    head[0]->insert(my_tile, points[tid]);
+
+}
 
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -977,24 +1046,42 @@ bool cdpQuadtree(int warp_size)
 ////////////////////////////////////////////////////////////////////////////////
 int main(int argc, char **argv)
 {
-    // Find/set the device.
-    // The test requires an architecture SM35 or greater (CDP capable).
-    int cuda_device = findCudaDevice(argc, (const char **)argv);
-    cudaDeviceProp deviceProps;
-    checkCudaErrors(cudaGetDeviceProperties(&deviceProps, cuda_device));
-    int cdpCapable = (deviceProps.major == 3 && deviceProps.minor >= 5) || deviceProps.major >=4;
 
-    printf("GPU device %s has compute capabilities (SM %d.%d)\n", deviceProps.name, deviceProps.major, deviceProps.minor);
 
-    if (!cdpCapable)
-    {
-        std::cerr << "cdpQuadTree requires SM 3.5 or higher to use CUDA Dynamic Parallelism.  Exiting...\n" << std::endl;
-        exit(EXIT_WAIVED);
+    boot_allocator(8ULL*1024*1024*1024, 64);
+    quadtree_node_v2 ** head;
+
+    cudaMalloc((void **)&head, sizeof(quadtree_node_v2 *));
+
+
+    init_tree<<<1,1>>>(head);
+
+
+    cudaDeviceSynchronize();
+
+
+    point * points;
+
+    cudaMallocManaged((void **)&points, sizeof(point)*7);
+
+    cudaDeviceSynchronize();
+
+
+    for (int i = 0; i < 7; i++){
+
+        points[i].set_point(1.0*i/8, 1.0-1.0*i/8);
+
     }
 
-    bool ok = cdpQuadtree(deviceProps.warpSize);
 
-    return (ok ? EXIT_SUCCESS : EXIT_FAILURE);
+    insert_points<<<1,28>>>(head, points, 7);
+
+
+    cudaFree(head);
+
+
+    free_allocator();
+
 }
 
 
