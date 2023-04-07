@@ -24,7 +24,7 @@ include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/EvalGpuArchs.cmake)
 
 #set(CUDA_TOOLKIT_ROOT_DIR /usr/local/cuda-12.1)
 
-find_package(CUDAToolkit 11.6 REQUIRED)
+find_package(CUDAToolkit 11.0 REQUIRED)
 set(CMAKE_CUDA_RUNTIME_LIBRARY SHARED)
 
 #package manager
@@ -35,15 +35,13 @@ include(cmake/ConfigureExecutable.cmake)
 
 ## Package Target
 
+add_library(poggers INTERFACE)
 
-## Package Target
+target_include_directories(poggers INTERFACE
+                           "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
+                           $<INSTALL_INTERFACE:include>)
 
-add_subdirectory(betta)
-
-add_library(quad_lib cdpQuadtree.cu)
-
-target_link_libraries(quad_lib INTERFACE poggers)
-
+target_link_libraries(poggers INTERFACE ssl crypto)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -53,17 +51,15 @@ set(CMAKE_CXX_COMPILER $ENV{CXX})
 set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS}")
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}") 
 
+
+set_target_properties(poggers PROPERTIES CMAKE_CUDA_RUNTIME_LIBRARY Static)
+set_target_properties(poggers PROPERTIES CUDA_SEPARABLE_COMPILATION ON )
+
+set(POGGERS_TESTS_BINARY_DIR "${CMAKE_BINARY_DIR}/tests")
+
 option(POGGERS_BUILD_TESTS "Configure CMake to build tests" OFF)
 
-ConfigureExecutable(cdpQuadtree "${CMAKE_CURRENT_SOURCE_DIR}/cdpQuadtree.cu" "${CMAKE_BINARY_DIR}")
-
-
-target_link_libraries(cdpQuadtree INTERFACE poggers)
-
-ConfigureExecutable(test "${CMAKE_CURRENT_SOURCE_DIR}/test.cu" "${CMAKE_BINARY_DIR}")
-
-set_property(TARGET cdpQuadtree PROPERTY CUDA_SEPARABLE_COMPILATION ON)
-
-
-target_link_libraries(test PRIVATE quad_lib)
+if(POGGERS_BUILD_TESTS)
+    add_subdirectory(tests)
+endif(POGGERS_BUILD_TESTS)
 
