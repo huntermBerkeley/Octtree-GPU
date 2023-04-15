@@ -370,13 +370,11 @@ struct quadtree_node_v2
 
         return child_box;
 
-
-
     }
 
     //1) child is not nullptr
     //
-    __device__ bool is_correct_child(int child_id, point new_item){
+    __device__ bool is_correct_child(int child_id, point new_item, Bounding_box child_box){
 
         //do a global load
         my_type * child = (my_type *) poggers::utils::ldca((uint64_t *)&children[child_id]);
@@ -385,7 +383,7 @@ struct quadtree_node_v2
         //float my_min_x = my_bounding_box.
 
 
-        Bounding_box child_box = get_child_bounding_box(child_id);
+        //Bounding_box child_box = get_child_bounding_box(child_id);
 
 
         return child_box.contains(new_item.get_point());
@@ -413,7 +411,6 @@ struct quadtree_node_v2
 					if (leader == insert_tile.thread_rank()){
                         //  atomicCAS(int* address, int compare, int val);
 						ballot = atomicCAS((unsigned long long int *) &my_points[i], ~0ULL, (unsigned long long int) new_item) == ~0ULL;
-            
 					}
 
 					if (insert_tile.ballot(ballot)) return true;
@@ -426,15 +423,47 @@ struct quadtree_node_v2
         return false;          
     }
 
+    __device__ bool maybe_insert_point(cg::thread_block_tile<4> insert_tile, point new_item){
+            Bounding_box child_box get_child_bounding_box(insert_tile.thread_rank());
+
+            bool is_valid = is_correct_child(insert_tile.thread_rank(), new_item, child_box);
+            auto valid = insert_tile.ballot(is_valid);
+            int leader = __ffs(valid)-1;
+
+            if (children[leader] == nullptr){
+                attach_new_child(cg::thread_block_tile<4> insert_tile, int leader);
+            }
+
+            // either i have created a new child or someone else did, so we have a child
+            children[leader]->insert(insert_tile, new_item);
+    }
+
     __device__ bool insert(cg::thread_block_tile<4> insert_tile, point new_item){
 
-
+        
         if (my_points != nullptr){
-            return add_to_leaf(insert_tile, new_item);
+            // Adding to leaf
+            if(add_to_leaf(insert_tile, new_item)) return true;
+            
+            point* my_points_ptr = my_points;
+            bool own_my_points = false;
+            // Leaf is full
+            if (insert_tile.thread_rank() == 0){
+                
+                own_my_points = (atomicCAS((unsigned long long int *) &my_points, (unsigned long long int) my_points_ptr, (unsigned long long int) nullptr) == (unsigned long long int) my_points_ptr);
+                __threadfence(); // flushed to global memory.
+            }
+            own_my_points = insert_tile.ballot(own_my_points);
+            // add the points in my_points_
+            if(own_my_points){
+                for(int i=0; i < 8,i++){
+                    maybe_insert_point(insert_tile, my_points_ptr[i]);
+                }
+            }
         }
-
-        // leaf full, create children
-
+        maybe_insert_point(insert_tile, new_item);
+        
+       
         /*
         // first, find valid child
         bool is_valid = is_correct_child(insert_tile.thread_rank(), new_item);
