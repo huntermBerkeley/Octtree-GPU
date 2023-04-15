@@ -21,11 +21,18 @@
 
 #include <poggers/allocators/one_size_allocator.cuh>
 
+
+//rand
+#include <random>
+#include <cstdlib>
+
 namespace cg = cooperative_groups;
 #include "helper_cuda.h"
 
 #define FAN_OUT 4
 #define FLOAT_UPPER float(1<<30)
+
+#define SANITY_CHECKS 1
 
 
 using namespace std::chrono;
@@ -39,9 +46,9 @@ double elapsed(high_resolution_clock::time_point t1, high_resolution_clock::time
 
 //global vals
 
-using alloc_type = poggers::allocators::one_size_slab_allocator<4>;
+//using alloc_type = poggers::allocators::one_size_slab_allocator<4>;
 
-//using alloc_type = poggers::allocators::one_size_allocator;
+using alloc_type = poggers::allocators::one_size_allocator;
 
 __device__ alloc_type global_allocator;
 
@@ -49,7 +56,7 @@ __device__ alloc_type global_allocator;
 
 __host__ void boot_allocator(uint64_t bytes_available, uint64_t alloc_size){
 
-    alloc_type * local_version = alloc_type::generate_on_device(bytes_available, alloc_size);
+    alloc_type * local_version = alloc_type::generate_on_device(bytes_available, alloc_size, 42);
 
     if (local_version == nullptr){
         printf("Allocator failed to acquire memory.\n");
@@ -122,10 +129,13 @@ class Points
 };
 
 //actually returns distance squared
+//
 __device__ float distance_between(float2 one_point, float2 another_point){
     return ((one_point.x - another_point.x)*(one_point.x - another_point.x)) + ((one_point.y - another_point.y) * (one_point.y - another_point.y));
 
 }
+
+
 
 struct point
 {
@@ -164,6 +174,13 @@ struct point
 
 
 };
+
+//cast points to float2 for comparison.
+//returns distance squared, should be ok as dist^2 is distance preserving.
+__device__ float distance_between(point one_point, point another_point){
+    return distance_between(one_point.get_point(), another_point.get_point());
+
+}
 
 ////////////////////////////////////////////////////////////////////////////////
 // A 2D bounding box
@@ -204,9 +221,14 @@ class Bounding_box
         }
 
         // Does a box contain a point.
-        __host__ __device__ bool contains(const float2 &p) const
+        __host__ __device__ bool contains(float2 p) const
         {
             return p.x >= m_p_min.x && p.x < m_p_max.x && p.y >= m_p_min.y && p.y < m_p_max.y;
+        }
+
+        __device__ bool contains(point p) const
+        {
+            return contains(p.get_point());
         }
 
         // Define the bounding box.
@@ -219,10 +241,7 @@ class Bounding_box
         }
         // Returns the minimum possible distance between the box and the point.
         // This might not even be a valid distance, but the valid distance will surely be greater than this.
-        __host__ __device__ float distance_between(point some_point){
 
-            float mindist = 1
-        }
 };
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -377,7 +396,7 @@ struct quadtree_node_v2
     __device__ bool is_correct_child(int child_id, point new_item, Bounding_box child_box){
 
         //do a global load
-        my_type * child = (my_type *) poggers::utils::ldca((uint64_t *)&children[child_id]);
+        //my_type * child = (my_type *) poggers::utils::ldca((uint64_t *)&children[child_id]);
 
 
         //float my_min_x = my_bounding_box.
@@ -390,13 +409,13 @@ struct quadtree_node_v2
 
     }
 
-    __device__ bool add_to_leaf(cg::thread_block_tile<4> insert_tile, point new_item){
+    __device__ bool add_to_leaf(cg::thread_block_tile<4> insert_tile, point * my_points_ptr, point new_item){
 
 		for (int i = insert_tile.thread_rank(); i < 8; i+= insert_tile.size()){
 
 				bool ballot = false;
 
-				if ((uint64_t) my_points[i] == ~0ULL){
+				if ((uint64_t) my_points_ptr[i] == ~0ULL){
 					ballot = true;
 				}
 
@@ -410,7 +429,7 @@ struct quadtree_node_v2
 
 					if (leader == insert_tile.thread_rank()){
                         //  atomicCAS(int* address, int compare, int val);
-						ballot = atomicCAS((unsigned long long int *) &my_points[i], ~0ULL, (unsigned long long int) new_item) == ~0ULL;
+						ballot = atomicCAS((unsigned long long int *) &my_points_ptr[i], ~0ULL, (unsigned long long int) new_item) == ~0ULL;
 					}
 
 					if (insert_tile.ballot(ballot)) return true;
@@ -424,28 +443,52 @@ struct quadtree_node_v2
     }
 
     __device__ bool maybe_insert_point(cg::thread_block_tile<4> insert_tile, point new_item){
-            Bounding_box child_box get_child_bounding_box(insert_tile.thread_rank());
+
+            Bounding_box child_box = get_child_bounding_box(insert_tile.thread_rank());
 
             bool is_valid = is_correct_child(insert_tile.thread_rank(), new_item, child_box);
             auto valid = insert_tile.ballot(is_valid);
             int leader = __ffs(valid)-1;
 
-            if (children[leader] == nullptr){
-                attach_new_child(cg::thread_block_tile<4> insert_tile, int leader);
+            if (leader == -1){
+
+
+                uint64_t tid = insert_tile.meta_group_rank()+blockIdx.x*insert_tile.meta_group_size();
+
+                printf("Tid %llu failed\n", tid);
+
+                //printf("tid %llu, Failed to place point %f %f in child %f %f %f %f %d\n", insert_tile.meta_group_rank(), new_item.x, new_item.y, child_box.m_p_min.x, child_box.m_p_max.x, child_box.m_p_min.y, child_box.m_p_max.y, child_box.contains(new_item));
+                return false;
             }
 
+            if (children[leader] == nullptr){
+                attach_new_child(insert_tile, leader);
+            }
+
+            __threadfence();
             // either i have created a new child or someone else did, so we have a child
             children[leader]->insert(insert_tile, new_item);
     }
 
     __device__ bool insert(cg::thread_block_tile<4> insert_tile, point new_item){
 
-        
-        if (my_points != nullptr){
+
+        //printf("Inserting...\n");
+
+        //to prevent reading from null, we cache old value.
+        point * my_points_ptr = my_points;
+
+
+        // #if SANITY_CHECKS
+        // point * my_points_ptr = 
+ 
+        // #endif
+
+        if (my_points_ptr != nullptr){
             // Adding to leaf
-            if(add_to_leaf(insert_tile, new_item)) return true;
+            if(add_to_leaf(insert_tile, my_points_ptr, new_item)) return true;
             
-            point* my_points_ptr = my_points;
+            //point* my_points_ptr = my_points;
             bool own_my_points = false;
             // Leaf is full
             if (insert_tile.thread_rank() == 0){
@@ -456,7 +499,7 @@ struct quadtree_node_v2
             own_my_points = insert_tile.ballot(own_my_points);
             // add the points in my_points_
             if(own_my_points){
-                for(int i=0; i < 8,i++){
+                for(int i=0; i < 8; i++){
                     maybe_insert_point(insert_tile, my_points_ptr[i]);
                 }
             }
@@ -560,9 +603,9 @@ struct quadtree_node_v2
         }
 
     }
-    __device__ float distance_bound(point query_point, cooperative_groups::thread_group g, my_type& result){
+    __device__ float distance_bound(point query_point, cooperative_groups::thread_group g, point & result){
             if (children == nullptr){
-                int num_pts = maybe_some_points.get_num_points();
+                int num_pts = get_num_points();
                 float mindist = get_minimum_distance(query_point, g, result);
                 return mindist;
             } else{
@@ -570,38 +613,52 @@ struct quadtree_node_v2
                     if (children+(citer*sizeof(my_type)) == NULL){
                         continue;
                     }
-                    if(children[citer].bounding_box().contains(query_point)){
-                        return children[citer].distance_bound(query_point, g);
+                    if(children[citer]->my_bounding_box.contains(query_point)){
+                        return children[citer]->distance_bound(query_point, g, result);
                     }
                 }
             }
             return -1;
     }
 
+    __device__ int get_num_points(){
+        //TODO:
+        //this
+        return 0;
+    }
+
+    __device__ float get_minimum_distance(point query_point, cooperative_groups::thread_group g, point & result){
+        return 0;
+    }
+
+
     __device__ point check_neighbouring_subtrees(point query_point, cooperative_groups::thread_group g, float bound){
-        float mindist = FLOAT_UPPER;
+
         point minpoint;
-        point maybe_points[4]
-        for(int citer = 0; citer < 4; citer++){
-            maybe_points[citer] = NULL;
-            if(children + (citer*sizeof(my_type)) != NULL){
-                if(is_correct_child(citer, query_point)) continue;
-                if(get_child_bounding_box(citer).distance_between(query_point) < bound){
-                    cooperative_groups::thread_block_tile<g.size() / 2> next_tile = cooperative_groups::tiled_partition<g.size() / 2>(cooperative_groups:: this_thread_block());
-                    maybe_points[citer] = check_neighbouring_subtrees(query_point, next_tile, bound);
-                }
-            }
-        }
-        for(int citer = 0; citer < 4; citer++){
-            if((maybe_points + (citer*sizeof(point)) != NULL) && !(maybe_points[citer].x == 0 && maybe_points[citer.y] == 0)){
-                //You went down this child, and found a point that is not (0,0)
-                float thisdist = distance_between(maybe_points[citer], query_point);
-                if(thisdist < mindist){
-                    minpoint = maybe_points[citer];
-                }
-            }
-        }
-        return minpoint
+        return minpoint;
+        // float mindist = FLOAT_UPPER;
+        // point minpoint;
+        // point maybe_points[4];
+        // for(int citer = 0; citer < 4; citer++){
+        //     maybe_points[citer] = NULL;
+        //     if(children + (citer*sizeof(my_type)) != NULL){
+        //         if(is_correct_child(citer, query_point)) continue;
+        //         if(get_child_bounding_box(citer).distance_between(query_point) < bound){
+        //             cooperative_groups::thread_block_tile<g.size() / 2> next_tile = cooperative_groups::tiled_partition<g.size() / 2>(cooperative_groups:: this_thread_block());
+        //             maybe_points[citer] = check_neighbouring_subtrees(query_point, next_tile, bound);
+        //         }
+        //     }
+        // }
+        // for(int citer = 0; citer < 4; citer++){
+        //     if((maybe_points + (citer*sizeof(point)) != NULL) && !(maybe_points[citer].x == 0 && maybe_points[citer.y] == 0)){
+        //         //You went down this child, and found a point that is not (0,0)
+        //         float thisdist = distance_between(maybe_points[citer], query_point);
+        //         if(thisdist < mindist){
+        //             minpoint = maybe_points[citer];
+        //         }
+        //     }
+        // }
+        // return minpoint
     }
 
 
@@ -1146,14 +1203,15 @@ bool cdpQuadtree(int warp_size)
 }
 
 
-__global__ void find_nn(Quadtree_node root, float2 query_point, point& result){
-    cooperative_groups::thread_block_tile<4> some_tile = cooperative_groups::tiled_partition<4>(cooperative_groups:: this_thread_block());
-    float mindist = root.distance_bound(query_point, some_tile, result); //TODO add the second traversal
-    Quadtree_node improved_result;
-    point another_point = root.check_neighbouring_subtrees(query_point, some_tile, improved_result, mindist);
-    if(!(another_point.x == 0 && another_point.y == 0) && distance_between(query_point, another_point) < mindist){
-        result = another_point;
-    }
+__global__ void find_nn(quadtree_node_v2 * root, point query_point, point& result){
+    //TODO: re-enable
+    // cooperative_groups::thread_block_tile<4> some_tile = cooperative_groups::tiled_partition<4>(cooperative_groups:: this_thread_block());
+    // float mindist = root->distance_bound(query_point, some_tile, result); //TODO add the second traversal
+    // Quadtree_node improved_result;
+    // point another_point = root->check_neighbouring_subtrees(query_point, some_tile, improved_result, mindist);
+    // if(!(another_point.x == 0 && another_point.y == 0) && distance_between(query_point, another_point) < mindist){
+    //     result = another_point;
+    // }
 }
 
 __global__ void init_tree(quadtree_node_v2 ** root){
@@ -1179,6 +1237,8 @@ __global__ void init_tree(quadtree_node_v2 ** root){
         memory_as_uint[i] = ~0ULL;
     }
 
+    new_node->set_bounding_box(0,0,1,1);
+
     root[0] = new_node;
 
 
@@ -1201,13 +1261,15 @@ __global__ void insert_points(quadtree_node_v2 ** head, point * points, uint64_t
     }
 
 
-    uint64_t tid = my_tile.meta_group_rank()+ blockIdx.x*my_tile.meta_group_size();
+    uint64_t tid = my_tile.meta_group_rank() + blockIdx.x*my_tile.meta_group_size();
 
     if (tid >= npoints) return;
 
 
     if (!head[0]->insert(my_tile, points[tid])){
-        printf("Failed insertion! %d\n", tid);
+        printf("Failed insertion! %llu\n", tid);
+    } else {
+        printf("%llu succeeded!\n", tid);
     }
 
 }
@@ -1225,6 +1287,48 @@ __global__ void boot_many_nodes(uint64_t n_nodes){
 
 }
 
+__host__ float randomFloat()
+{
+    float cap = (RAND_MAX);
+
+    float rand = std::rand();
+
+    return rand/cap;
+    //return (float)(std::rand());
+}
+
+__host__ point * generate_random_points(uint64_t npoints){
+
+    point * host_version;
+
+    cudaMallocHost((void **)&host_version, sizeof(point)*npoints);
+
+
+    for (uint64_t i =0; i < npoints; i++){
+
+        host_version[i].set_point(randomFloat(), randomFloat());
+
+    }
+
+    return host_version;
+
+}
+
+
+__host__ point * get_dev_points(point * host_version, uint64_t npoints){
+
+    point * dev_version;
+
+    cudaMalloc((void **)&dev_version, sizeof(point)*npoints);
+
+    cudaMemcpy(dev_version, host_version, sizeof(point)*npoints, cudaMemcpyHostToDevice);
+
+    cudaDeviceSynchronize();
+
+    return dev_version;
+
+}  
+
 
 ////////////////////////////////////////////////////////////////////////////////
 // Main entry point.
@@ -1232,6 +1336,18 @@ __global__ void boot_many_nodes(uint64_t n_nodes){
 int main(int argc, char **argv)
 {
 
+
+    //get stack size
+
+    cudaDeviceSetLimit(cudaLimitStackSize, 4096);
+
+    size_t stack_size;
+
+    cudaDeviceGetLimit  (&stack_size, cudaLimitStackSize);
+
+    printf("Stack is %llu\n", stack_size);
+
+    cudaDeviceSynchronize();
 
     boot_allocator(40000000+2000, 64);
     quadtree_node_v2 ** head;
@@ -1245,21 +1361,27 @@ int main(int argc, char **argv)
     cudaDeviceSynchronize();
 
 
-    point * points;
+    uint64_t npoints = 500;
 
-    cudaMallocManaged((void **)&points, sizeof(point)*7);
+    uint64_t nthreads = npoints*4;
 
-    cudaDeviceSynchronize();
+    point * host_points = generate_random_points(npoints);
+
+    point * dev_points = get_dev_points(host_points, npoints);
+
+    // cudaMallocManaged((void **)&points, sizeof(point)*8);
+
+    // cudaDeviceSynchronize();
 
 
-    for (int i = 0; i < 7; i++){
+    // for (int i = 0; i < 8; i++){
 
-        points[i].set_point(1.0*i/8, 1.0-1.0*i/8);
+    //     points[i].set_point(1.0*i/8, 1.0-1.0*i/8);
 
-    }
+    // }
 
 
-    insert_points<<<1,28>>>(head, points, 7);
+    insert_points<<<(nthreads-1)/256+1,256>>>(head, dev_points, npoints);
 
 
     cudaFree(head);
@@ -1268,17 +1390,17 @@ int main(int argc, char **argv)
     cudaDeviceSynchronize();
 
 
-    uint64_t nodes_to_boot = 10000000;
+    // uint64_t nodes_to_boot = 10000000;
 
-    auto malloc_start = high_resolution_clock::now();
+    // auto malloc_start = high_resolution_clock::now();
 
-    boot_many_nodes<<<(nodes_to_boot-1)/512+1,512>>>(nodes_to_boot);
+    // boot_many_nodes<<<(nodes_to_boot-1)/512+1,512>>>(nodes_to_boot);
 
-    cudaDeviceSynchronize();
+    // cudaDeviceSynchronize();
 
-    auto malloc_end = high_resolution_clock::now();
+    // auto malloc_end = high_resolution_clock::now();
 
-    std::cout << "Acquired memory for " << nodes_to_boot << " in " << std::fixed << elapsed(malloc_start, malloc_end) << ", throughput " << 1.0*nodes_to_boot/elapsed(malloc_start, malloc_end) << std::endl;
+    // std::cout << "Acquired memory for " << nodes_to_boot << " in " << std::fixed << elapsed(malloc_start, malloc_end) << ", throughput " << 1.0*nodes_to_boot/elapsed(malloc_start, malloc_end) << std::endl;
 
 
     free_allocator();
