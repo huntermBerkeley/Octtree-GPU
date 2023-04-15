@@ -15,7 +15,11 @@
 #include <cooperative_groups.h>
 #include <vector_functions.h>
 
+#include <chrono>
+
 #include <poggers/allocators/slab_one_size.cuh>
+
+#include <poggers/allocators/one_size_allocator.cuh>
 
 namespace cg = cooperative_groups;
 #include "helper_cuda.h"
@@ -24,11 +28,20 @@ namespace cg = cooperative_groups;
 #define FLOAT_UPPER float(1<<30)
 
 
+using namespace std::chrono;
+
+
+
+double elapsed(high_resolution_clock::time_point t1, high_resolution_clock::time_point t2) {
+   return (duration_cast<duration<double> >(t2 - t1)).count();
+}
 
 
 //global vals
 
 using alloc_type = poggers::allocators::one_size_slab_allocator<4>;
+
+//using alloc_type = poggers::allocators::one_size_allocator;
 
 __device__ alloc_type global_allocator;
 
@@ -105,6 +118,7 @@ class Points
             m_x = x;
             m_y = y;
         }
+
 };
 
 //actually returns distance squared
@@ -139,6 +153,12 @@ struct point
 
         return sqrt( (x-alt_point.x)*(x-alt_point.x) + (y-alt_point.y)*(y-alt_point.y) );
 
+
+    }
+
+    __device__ operator uint64_t(){
+
+            return ((uint64_t *) this)[0];
 
     }
 
@@ -372,12 +392,13 @@ struct quadtree_node_v2
 
     }
 
-    __device__ bool add_to_leaf(int child_id, point new_item){
+    __device__ bool add_to_leaf(cg::thread_block_tile<4> insert_tile, point new_item){
+
 		for (int i = insert_tile.thread_rank(); i < 8; i+= insert_tile.size()){
 
 				bool ballot = false;
 
-				if (my_points[i] == NULL){
+				if ((uint64_t) my_points[i] == ~0ULL){
 					ballot = true;
 				}
 
@@ -391,7 +412,7 @@ struct quadtree_node_v2
 
 					if (leader == insert_tile.thread_rank()){
                         //  atomicCAS(int* address, int compare, int val);
-						ballot = atomicCAS((unsigned long long int *) &my_points[leader], ~0ULL, (unsigned long long int) new_item) == ~0ULL;
+						ballot = atomicCAS((unsigned long long int *) &my_points[i], ~0ULL, (unsigned long long int) new_item) == ~0ULL;
             
 					}
 
@@ -1123,6 +1144,13 @@ __global__ void init_tree(quadtree_node_v2 ** root){
     if (new_node == nullptr || memory == nullptr) printf("Allocator could not request!\n");
 
 
+    uint64_t * memory_as_uint = (uint64_t *) memory;
+
+    for (int i =0; i < 8; i++){
+        memory_as_uint[i] = ~0ULL;
+    }
+
+    root[0] = new_node;
 
 
 }
@@ -1149,7 +1177,22 @@ __global__ void insert_points(quadtree_node_v2 ** head, point * points, uint64_t
     if (tid >= npoints) return;
 
 
-    head[0]->insert(my_tile, points[tid]);
+    if (!head[0]->insert(my_tile, points[tid])){
+        printf("Failed insertion! %d\n", tid);
+    }
+
+}
+
+
+__global__ void boot_many_nodes(uint64_t n_nodes){
+
+    uint64_t tid =threadIdx.x+blockIdx.x*blockDim.x;
+
+    if (tid >= n_nodes) return;
+
+
+    void * node = global_allocator.malloc();
+    void * memory = global_allocator.malloc();
 
 }
 
@@ -1161,10 +1204,10 @@ int main(int argc, char **argv)
 {
 
 
-    boot_allocator(8ULL*1024*1024*1024, 64);
+    boot_allocator(40000000+2000, 64);
     quadtree_node_v2 ** head;
 
-    cudaMalloc((void **)&head, sizeof(quadtree_node_v2 *));
+    cudaMallocManaged((void **)&head, sizeof(quadtree_node_v2 *));
 
 
     init_tree<<<1,1>>>(head);
@@ -1191,6 +1234,22 @@ int main(int argc, char **argv)
 
 
     cudaFree(head);
+
+
+    cudaDeviceSynchronize();
+
+
+    uint64_t nodes_to_boot = 10000000;
+
+    auto malloc_start = high_resolution_clock::now();
+
+    boot_many_nodes<<<(nodes_to_boot-1)/512+1,512>>>(nodes_to_boot);
+
+    cudaDeviceSynchronize();
+
+    auto malloc_end = high_resolution_clock::now();
+
+    std::cout << "Acquired memory for " << nodes_to_boot << " in " << std::fixed << elapsed(malloc_start, malloc_end) << ", throughput " << 1.0*nodes_to_boot/elapsed(malloc_start, malloc_end) << std::endl;
 
 
     free_allocator();
