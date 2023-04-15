@@ -455,9 +455,9 @@ struct quadtree_node_v2
 
                 uint64_t tid = insert_tile.meta_group_rank()+blockIdx.x*insert_tile.meta_group_size();
 
-                printf("Tid %llu failed\n", tid);
+                //printf("Tid %llu failed\n", tid);
 
-                //printf("tid %llu, Failed to place point %f %f in child %f %f %f %f %d\n", insert_tile.meta_group_rank(), new_item.x, new_item.y, child_box.m_p_min.x, child_box.m_p_max.x, child_box.m_p_min.y, child_box.m_p_max.y, child_box.contains(new_item));
+                printf("tid %llu %llu, Failed to place point %f %f in child %f %f %f %f %d\n", threadIdx.x+blockIdx.x*blockDim.x, tid, new_item.x, new_item.y, child_box.m_p_min.x, child_box.m_p_max.x, child_box.m_p_min.y, child_box.m_p_max.y, child_box.contains(new_item));
                 return false;
             }
 
@@ -473,16 +473,27 @@ struct quadtree_node_v2
     __device__ bool insert(cg::thread_block_tile<4> insert_tile, point new_item){
 
 
+
+        #if SANITY_CHECKS
+
+        my_type * lead_node_this = insert_tile.shfl(this, 0);
+
+        if (lead_node_this != this) printf("Thread 0 sees different node\n");
+
+        #endif
+
         //printf("Inserting...\n");
 
         //to prevent reading from null, we cache old value.
         point * my_points_ptr = my_points;
 
 
-        // #if SANITY_CHECKS
-        // point * my_points_ptr = 
+        #if SANITY_CHECKS
+        point * lead_my_points_ptr = insert_tile.shfl(my_points_ptr, 0);
+
+        if (lead_my_points_ptr != my_points_ptr) printf("Discrepancy in my_points_ptr\n");
  
-        // #endif
+        #endif
 
         if (my_points_ptr != nullptr){
             // Adding to leaf
@@ -547,16 +558,18 @@ struct quadtree_node_v2
 
         }
 
-        my_type * child = insert_tile.shfl((my_type * ) allocation, 0);
+        my_type * child = (my_type * ) insert_tile.shfl(allocation, 0);
 
         //insert_tile.sync();
 
         if (insert_tile.thread_rank() == 1){
 
-            atomicExch((unsigned long long int *)&child->my_points, (unsigned long long int )(allocation));
+            atomicExch((unsigned long long int *)&(child->my_points), (unsigned long long int )(allocation));
 
         }
 
+
+        __threadfence();
 
         //set the bounding box and null out other stuff
 
@@ -574,9 +587,23 @@ struct quadtree_node_v2
 
             for (int i = 0; i < 8; i ++){
 
-                uint64_t * def_a_ptr = (uint64_t *) &child->my_points[i];
+
+                uint64_t * def_a_ptr = &(((uint64_t *) allocation)[i]);
+
+                //uint64_t * def_a_ptr = (uint64_t *) &(child->my_points[i]);
                 *def_a_ptr = ~0ULL;
 
+            }
+
+        }
+
+
+        __threadfence();
+
+        if (insert_tile.thread_rank() == 1){
+
+            if (child->my_points != allocation){
+                printf("Error setting %llx instead of %llx\n", (uint64_t) child->my_points, (uint64_t) allocation);
             }
 
         }
@@ -1269,7 +1296,7 @@ __global__ void insert_points(quadtree_node_v2 ** head, point * points, uint64_t
     if (!head[0]->insert(my_tile, points[tid])){
         printf("Failed insertion! %llu\n", tid);
     } else {
-        printf("%llu succeeded!\n", tid);
+        //printf("%llu succeeded!\n", tid);
     }
 
 }
@@ -1308,6 +1335,8 @@ __host__ point * generate_random_points(uint64_t npoints){
 
         host_version[i].set_point(randomFloat(), randomFloat());
 
+        //while(host_version[i])
+
     }
 
     return host_version;
@@ -1339,7 +1368,7 @@ int main(int argc, char **argv)
 
     //get stack size
 
-    cudaDeviceSetLimit(cudaLimitStackSize, 4096);
+    cudaDeviceSetLimit(cudaLimitStackSize, 16384);
 
     size_t stack_size;
 
@@ -1349,7 +1378,7 @@ int main(int argc, char **argv)
 
     cudaDeviceSynchronize();
 
-    boot_allocator(40000000+2000, 64);
+    boot_allocator(80000000+2000, 64);
     quadtree_node_v2 ** head;
 
     cudaMallocManaged((void **)&head, sizeof(quadtree_node_v2 *));
@@ -1361,7 +1390,7 @@ int main(int argc, char **argv)
     cudaDeviceSynchronize();
 
 
-    uint64_t npoints = 500;
+    uint64_t npoints = 100000000;
 
     uint64_t nthreads = npoints*4;
 
@@ -1380,8 +1409,15 @@ int main(int argc, char **argv)
 
     // }
 
+    auto insert_start = high_resolution_clock::now();
 
     insert_points<<<(nthreads-1)/256+1,256>>>(head, dev_points, npoints);
+
+    cudaDeviceSynchronize();
+
+    auto insert_end = high_resolution_clock::now();
+
+    std::cout << "Inserted " << npoints << " items in " << std::fixed << elapsed(insert_start, insert_end) << ", throughput " << 1.0*npoints/elapsed(insert_start, insert_end) << std::endl;
 
 
     cudaFree(head);
@@ -1392,7 +1428,7 @@ int main(int argc, char **argv)
 
     // uint64_t nodes_to_boot = 10000000;
 
-    // auto malloc_start = high_resolution_clock::now();
+    //auto malloc_start = high_resolution_clock::now();
 
     // boot_many_nodes<<<(nodes_to_boot-1)/512+1,512>>>(nodes_to_boot);
 
