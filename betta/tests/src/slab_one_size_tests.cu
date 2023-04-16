@@ -461,7 +461,7 @@ int main(int argc, char** argv) {
 
    //test_num_malloc_frees(10000, 10);
 
-   test_num_malloc_frees<4>(1000000000, 10);
+   test_num_malloc_frees_bitarr<4>(1000000000, 100);
 
    //test_num_malloc_frees(1000000, 10);
 

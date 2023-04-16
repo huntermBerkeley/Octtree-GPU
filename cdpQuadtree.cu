@@ -46,9 +46,9 @@ double elapsed(high_resolution_clock::time_point t1, high_resolution_clock::time
 
 //global vals
 
-//using alloc_type = poggers::allocators::one_size_slab_allocator<4>;
+using alloc_type = poggers::allocators::one_size_slab_allocator<4>;
 
-using alloc_type = poggers::allocators::one_size_allocator;
+//using alloc_type = poggers::allocators::one_size_allocator;
 
 __device__ alloc_type global_allocator;
 
@@ -56,7 +56,7 @@ __device__ alloc_type global_allocator;
 
 __host__ void boot_allocator(uint64_t bytes_available, uint64_t alloc_size){
 
-    alloc_type * local_version = alloc_type::generate_on_device(bytes_available, alloc_size, 42);
+    alloc_type * local_version = alloc_type::generate_on_device(bytes_available, alloc_size);
 
     if (local_version == nullptr){
         printf("Allocator failed to acquire memory.\n");
@@ -542,6 +542,85 @@ struct quadtree_node_v2
 
         return children[leader]->insert(insert_tile, new_item);
         */
+    }
+
+
+    __device__ int probe_max_depth(){
+
+        int depth = 0;
+
+        for (int i=0; i < 4; i++){
+
+            if (children[i] != nullptr){
+
+
+                int new_depth = children[i]->probe_max_depth()+1;
+
+                if (new_depth>depth) depth = new_depth;
+
+            }
+        }
+
+
+        return depth;
+
+
+    }
+
+    //takes a node with no ptr
+    //attach new nodes to each level
+    __device__ void build_to_depth(cg::thread_block_tile<4> insert_tile, int depth){
+
+
+
+        if (depth == 0){
+
+
+            for (int i =0; i < 4; i++){
+                attach_new_child(insert_tile, i);
+            }
+
+            return;
+        } else {
+
+
+            for (int i = 0; i < 4; i++){
+
+
+                my_type * new_child;
+
+                if (insert_tile.thread_rank() == 0){
+                    new_child = (my_type *) global_allocator.malloc();
+
+                    if (new_child == nullptr){
+                        printf("Alloc failure in init.\n");
+                    }
+
+                    new_child->my_bounding_box = get_child_bounding_box(i);
+
+                    new_child->my_points = nullptr;
+
+
+
+                    children[i] = new_child;
+
+                }
+
+                new_child = insert_tile.shfl(new_child, 0);
+
+                
+                new_child->children[insert_tile.thread_rank()] = nullptr;
+
+                __threadfence();
+                    
+                new_child->build_to_depth(insert_tile, depth-1);
+
+            }
+
+
+        }
+
+
     }
 
     __device__ void attach_new_child(cg::thread_block_tile<4> insert_tile, int leader){
@@ -1241,32 +1320,51 @@ __global__ void find_nn(quadtree_node_v2 * root, point query_point, point& resul
     // }
 }
 
-__global__ void init_tree(quadtree_node_v2 ** root){
+__global__ void init_tree(quadtree_node_v2 ** root, int depth){
 
 
-    uint64_t tid = threadIdx.x + blockIdx.x*blockDim.x;
+    //uint64_t tid = threadIdx.x + blockIdx.x*blockDim.x;
 
-    if (tid != 0) return;
+    auto my_thread_block = cg::this_thread_block();
 
-    quadtree_node_v2 * new_node = (quadtree_node_v2 *) global_allocator.malloc();
-
-
-    void * memory = global_allocator.malloc();
-
-    atomicExch((unsigned long long int *)&new_node->my_points, (unsigned long long int )(memory));
-
-    if (new_node == nullptr || memory == nullptr) printf("Allocator could not request!\n");
+    auto my_tile = cg::tiled_partition<4>(my_thread_block);
 
 
-    uint64_t * memory_as_uint = (uint64_t *) memory;
+    quadtree_node_v2 * new_node;
 
-    for (int i =0; i < 8; i++){
-        memory_as_uint[i] = ~0ULL;
+
+    if (my_tile.meta_group_rank() != 0) return;
+
+
+    if (my_tile.thread_rank() == 0){
+
+
+        new_node = (quadtree_node_v2 *) global_allocator.malloc();
+
+
+        //void * memory = global_allocator.malloc();
+
+        //atomicExch((unsigned long long int *)&new_node->my_points, (unsigned long long int )(memory));
+
+        if (new_node == nullptr) printf("Allocator could not request!\n");
+
+
+      //uint64_t * memory_as_uint = (uint64_t *) memory
+
+        new_node->set_bounding_box(0,0,1,1);
+
+        for (int i =0; i < 4; i++){
+            new_node->children[i] = nullptr;
+        }
+
+        root[0] = new_node;
+
     }
 
-    new_node->set_bounding_box(0,0,1,1);
 
-    root[0] = new_node;
+    new_node->build_to_depth(my_tile, depth);
+
+
 
 
 }
@@ -1299,6 +1397,17 @@ __global__ void insert_points(quadtree_node_v2 ** head, point * points, uint64_t
         //printf("%llu succeeded!\n", tid);
     }
 
+}
+
+
+__global__ void print_depth(quadtree_node_v2 ** head){
+    uint64_t tid = threadIdx.x+blockIdx.x*blockDim.x;
+
+    if (tid != 0) return;
+
+    int depth = head[0]->probe_max_depth();
+
+    printf("Max depth is %d\n", depth);
 }
 
 
@@ -1384,7 +1493,7 @@ int main(int argc, char **argv)
     cudaMallocManaged((void **)&head, sizeof(quadtree_node_v2 *));
 
 
-    init_tree<<<1,1>>>(head);
+    init_tree<<<1,4>>>(head, 6);
 
 
     cudaDeviceSynchronize();
@@ -1419,6 +1528,11 @@ int main(int argc, char **argv)
 
     std::cout << "Inserted " << npoints << " items in " << std::fixed << elapsed(insert_start, insert_end) << ", throughput " << 1.0*npoints/elapsed(insert_start, insert_end) << std::endl;
 
+    cudaDeviceSynchronize();
+
+    print_depth<<<1,1>>>(head);
+
+    cudaDeviceSynchronize();
 
     cudaFree(head);
 
