@@ -171,7 +171,8 @@ struct point
             return ((uint64_t *) this)[0];
 
     }
-
+    
+    auto operator<=>(const point&) const = default;
 
 };
 
@@ -389,6 +390,36 @@ struct quadtree_node_v2
 
         return child_box;
 
+    }
+
+    __device__ bool simple_query(cg::thread_block_tile<4> insert_tile, point item){
+
+        // leaf 
+        if (my_points != nullptr){
+            for (int i = insert_tile.thread_rank(); i < 8; i+= insert_tile.size()){
+                bool ballot = false;
+
+				if ( my_points[i] == item){
+					ballot = true;
+				}
+
+				auto ballot_result = insert_tile.ballot(ballot);
+                if (ballot_result) return true;
+            }
+            return false;
+        }
+
+        Bounding_box child_box = get_child_bounding_box(insert_tile.thread_rank());
+
+        bool is_valid = is_correct_child(insert_tile.thread_rank(), new_item, child_box);
+        auto valid = insert_tile.ballot(is_valid);
+        int leader = __ffs(valid)-1;
+
+        if(children[leader] == nullptr){
+            return false;
+        }
+
+        children[leader]->simple_query(insert_tile, item);
     }
 
     //1) child is not nullptr
