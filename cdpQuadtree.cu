@@ -490,7 +490,7 @@ struct quadtree_node_v2
 
                 //printf("Tid %llu failed\n", tid);
 
-                printf("tid %llu %llu, Failed to place point %f %f in child %f %f %f %f %d\n", threadIdx.x+blockIdx.x*blockDim.x, tid, new_item.x, new_item.y, child_box.m_p_min.x, child_box.m_p_max.x, child_box.m_p_min.y, child_box.m_p_max.y, child_box.contains(new_item));
+                //printf("tid %llu %llu, Failed to place point %f %f in child %f %f %f %f %d\n", threadIdx.x+blockIdx.x*blockDim.x, tid, new_item.x, new_item.y, child_box.m_p_min.x, child_box.m_p_max.x, child_box.m_p_min.y, child_box.m_p_max.y, child_box.contains(new_item));
                 return false;
             }
 
@@ -1367,10 +1367,11 @@ bool cdpQuadtree(int warp_size)
 }
 
 
-__global__ void find_nn(quadtree_node_v2 root, point query_point, point* result){
+__global__ void find_nn(quadtree_node_v2 root, point query_point, float* result){
     //cooperative_groups::thread_block_tile<4> some_tile = cooperative_groups::tiled_partition<4>(cooperative_groups:: this_thread_block());
     float mindist = root.distance_bound(query_point, root); //TODO add the second traversal
-    //std::cout<<"Min dist in leaf was "<<mindist<<std::endl;
+    *result = mindist;
+    return; 
     //quadtree_node_v2 improved_result;
     point another_point = root.check_neighbouring_subtrees(query_point, mindist);
     if(!(another_point.x == 0 && another_point.y == 0) && distance_between(query_point, another_point) < mindist){
@@ -1624,8 +1625,13 @@ int main(int argc, char **argv)
 
 
     //insert_points<<<1,28>>>(head, points, 7);
-    point* result = new point;
-    //find_nn(**head, points[5], &*result); 
+    //point** result;
+    //cudaMallocManaged((void **)&result, sizeof(point *));
+    float** result;
+    cudaMallocManaged((void **)&result, sizeof(float *));
+    find_nn<<<1, 28>>>(**head, host_points[5], *result); 
+    std::cout<<"called find_nn successfully"<<std::endl;
+    std::cout<<*result<<std::endl;
     print_depth<<<1,1>>>(head);
     uint64_t * misses;
 
