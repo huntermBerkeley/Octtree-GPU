@@ -15,6 +15,9 @@
 #include <cooperative_groups.h>
 #include <vector_functions.h>
 
+#include <iostream>
+#include <iomanip>
+
 #include <chrono>
 
 #include <poggers/allocators/slab_one_size.cuh>
@@ -537,7 +540,7 @@ struct quadtree_node_v2
             // Leaf is full
             if (insert_tile.thread_rank() == 0){
                 
-                own_my_points = (atomicCAS((unsigned long long int *) &my_points, (unsigned long long int) my_points_ptr, (unsigned long long int) nullptr) == (unsigned long long int) my_points_ptr);
+                own_my_points = (atomicCAS((unsigned long long int *) &my_points, (unsigned long long int)my_points_ptr, (unsigned long long int) nullptr) == (unsigned long long int) my_points_ptr);
                 __threadfence(); // flushed to global memory.
             }
             own_my_points = insert_tile.ballot(own_my_points);
@@ -742,7 +745,7 @@ struct quadtree_node_v2
         }
 
     }
-    __device__ float get_minimum_distance(point q, my_type& r){
+    __device__ float get_minimum_distance(point q){
 	    float mindist = FLOAT_UPPER;
 	    for(int iter = 0; iter < 8; iter++){
 		    if(distance_between(q, my_points[iter]) < mindist){
@@ -751,21 +754,23 @@ struct quadtree_node_v2
 	    }
 	    return mindist;
     }
-    __device__ float distance_bound(point query_point, my_type& result){
-            if (children == nullptr){
-                float mindist = get_minimum_distance(query_point, result);
+    __device__ float distance_bound(point query_point){
+
+            if (my_points != nullptr){
+                float mindist = get_minimum_distance(query_point);
                 return mindist;
             } else{
                 for(int citer = 0; citer < 4; citer++){
-                    if (children+(citer*sizeof(my_type)) == NULL){
+                    if (children[citer] == NULL){
                         continue;
                     }
                     if(get_child_bounding_box(citer).contains(query_point)){
-                        return children[citer]->distance_bound(query_point, result);
+
+                        return children[citer]->distance_bound(query_point);
                     }
                 }
             }
-            return -1;
+            return FLOAT_UPPER;
     }
 
     __device__ point check_neighbouring_subtrees(point query_point, float bound){
@@ -1367,16 +1372,20 @@ bool cdpQuadtree(int warp_size)
 }
 
 
-__global__ void find_nn(quadtree_node_v2 root, point query_point, float* result){
+__global__ void find_nn(quadtree_node_v2 ** head, point query_point, float* result){
+
+
+
+    quadtree_node_v2 * root = head[0];
     //cooperative_groups::thread_block_tile<4> some_tile = cooperative_groups::tiled_partition<4>(cooperative_groups:: this_thread_block());
-    float mindist = root.distance_bound(query_point, root); //TODO add the second traversal
+    float mindist = root->distance_bound(query_point); //TODO add the second traversal
     *result = mindist;
     return; 
     //quadtree_node_v2 improved_result;
-    point another_point = root.check_neighbouring_subtrees(query_point, mindist);
-    if(!(another_point.x == 0 && another_point.y == 0) && distance_between(query_point, another_point) < mindist){
-        *result = another_point;
-    }
+    // point another_point = root->check_neighbouring_subtrees(query_point, mindist);
+    // if(!(another_point.x == 0 && another_point.y == 0) && distance_between(query_point, another_point) < mindist){
+    //     *result = another_point;
+    // }
 }
 
 __global__ void init_tree(quadtree_node_v2 ** root, int depth){
@@ -1561,7 +1570,7 @@ __host__ point * get_dev_points(point * host_version, uint64_t npoints){
 
 
 ////////////////////////////////////////////////////////////////////////////////
-// Main entry point.
+//  entry point.
 ////////////////////////////////////////////////////////////////////////////////
 int main(int argc, char **argv)
 {
@@ -1591,7 +1600,7 @@ int main(int argc, char **argv)
     cudaDeviceSynchronize();
 
 
-    uint64_t npoints = 100000000;
+    uint64_t npoints = 1000;
 
     uint64_t nthreads = npoints*4;
 
@@ -1627,39 +1636,73 @@ int main(int argc, char **argv)
     //insert_points<<<1,28>>>(head, points, 7);
     //point** result;
     //cudaMallocManaged((void **)&result, sizeof(point *));
-    float** result;
-    cudaMallocManaged((void **)&result, sizeof(float *));
-    find_nn<<<1, 28>>>(**head, host_points[5], *result); 
+    float * result;
+    cudaMallocManaged((void **)&result, sizeof(float));
+
+
+    cudaDeviceSynchronize();
+
+    result[0] = FLOAT_UPPER;
+
+    cudaDeviceSynchronize();
+
+    find_nn<<<1, 28>>>(head, host_points[5], result); 
+
+
+    cudaDeviceSynchronize();
     std::cout<<"called find_nn successfully"<<std::endl;
     std::cout<<*result<<std::endl;
-    print_depth<<<1,1>>>(head);
-    uint64_t * misses;
 
-    cudaMallocManaged((void **)&misses, sizeof(uint64_t));
+
+    point new_point = host_points[5];
+
+    new_point.y += .0001;
+    cudaDeviceSynchronize();
+
+    result[0] = FLOAT_UPPER;
 
     cudaDeviceSynchronize();
 
-    misses[0] = 0;
-
-
-    cudaDeviceSynchronize();
-
-    auto query_start = high_resolution_clock::now();
-
-    query_points<<<(nthreads-1)/256+1,256>>>(head, dev_points, npoints, misses);
-
-    cudaDeviceSynchronize();
-
-    auto query_end = high_resolution_clock::now();
-
-    std::cout << "queried " << npoints << " items in " << std::fixed << elapsed(query_start, query_end) << ", throughput " << 1.0*npoints/elapsed(query_start, query_end) << std::endl;
-
-    printf("Missed %llu/%llu\n", misses[0], npoints);
     //print_depth<<<1,1>>>(head);
 
+
+    find_nn<<<1, 28>>>(head, new_point, result); 
+
+
+    cudaDeviceSynchronize();
+    std::cout<<"called find_nn successfully"<<std::endl;
+    std::cout<< std::scientific << *result<<std::endl;
+
     cudaDeviceSynchronize();
 
-    cudaFree(head);
+
+    // uint64_t * misses;
+
+    // cudaMallocManaged((void **)&misses, sizeof(uint64_t));
+
+    // cudaDeviceSynchronize();
+
+    // misses[0] = 0;
+
+
+    // cudaDeviceSynchronize();
+
+    // auto query_start = high_resolution_clock::now();
+
+    // query_points<<<(nthreads-1)/256+1,256>>>(head, dev_points, npoints, misses);
+
+    // cudaDeviceSynchronize();
+
+    // auto query_end = high_resolution_clock::now();
+
+    // std::cout << "queried " << npoints << " items in " << std::fixed << elapsed(query_start, query_end) << ", throughput " << 1.0*npoints/elapsed(query_start, query_end) << std::endl;
+
+    // printf("Missed %llu/%llu\n", misses[0], npoints);
+    // //print_depth<<<1,1>>>(head);
+
+    // cudaDeviceSynchronize();
+
+    // cudaFree(head);
 
 
     cudaDeviceSynchronize();
