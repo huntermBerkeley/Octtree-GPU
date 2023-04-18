@@ -46,9 +46,9 @@ double elapsed(high_resolution_clock::time_point t1, high_resolution_clock::time
 
 //global vals
 
-using alloc_type = poggers::allocators::one_size_slab_allocator<4>;
+//using alloc_type = poggers::allocators::one_size_slab_allocator<4>;
 
-//using alloc_type = poggers::allocators::one_size_allocator;
+using alloc_type = poggers::allocators::one_size_allocator;
 
 __device__ alloc_type global_allocator;
 
@@ -56,7 +56,7 @@ __device__ alloc_type global_allocator;
 
 __host__ void boot_allocator(uint64_t bytes_available, uint64_t alloc_size){
 
-    alloc_type * local_version = alloc_type::generate_on_device(bytes_available, alloc_size);
+    alloc_type * local_version = alloc_type::generate_on_device(bytes_available, alloc_size, 42);
 
     if (local_version == nullptr){
         printf("Allocator failed to acquire memory.\n");
@@ -172,7 +172,11 @@ struct point
 
     }
     
-    auto operator<=>(const point&) const = default;
+   // auto operator<=>(const point&) const = default;
+
+    __host__ __device__ auto operator==(const point & another_point){
+        return another_point.x==x && another_point.y==y;
+    }
 
 };
 //actually returns distance squared
@@ -416,7 +420,7 @@ struct quadtree_node_v2
 
         Bounding_box child_box = get_child_bounding_box(insert_tile.thread_rank());
 
-        bool is_valid = is_correct_child(insert_tile.thread_rank(), new_item, child_box);
+        bool is_valid = is_correct_child(insert_tile.thread_rank(), item, child_box);
         auto valid = insert_tile.ballot(is_valid);
         int leader = __ffs(valid)-1;
 
@@ -1463,6 +1467,37 @@ __global__ void insert_points(quadtree_node_v2 ** head, point * points, uint64_t
 }
 
 
+__global__ void query_points(quadtree_node_v2 ** head, point * points, uint64_t npoints, uint64_t * misses){
+
+
+    auto my_thread_block = cg::this_thread_block();
+
+    auto my_tile = cg::tiled_partition<4>(my_thread_block);
+
+    //precondition - make blockdim /4
+
+    if (blockDim.x % 4 != 0){
+        printf("Block dim %llu must be divisible by 4\n", blockDim.x);
+
+        return;
+    }
+
+
+    uint64_t tid = my_tile.meta_group_rank() + blockIdx.x*my_tile.meta_group_size();
+
+    if (tid >= npoints) return;
+
+
+    if (!head[0]->simple_query(my_tile, points[tid])){
+
+        if (my_tile.thread_rank() == 0) atomicAdd((unsigned long long int *)misses, 1ULL);
+    }
+
+
+
+}
+
+
 __global__ void print_depth(quadtree_node_v2 ** head){
     uint64_t tid = threadIdx.x+blockIdx.x*blockDim.x;
 
@@ -1529,6 +1564,8 @@ __host__ point * get_dev_points(point * host_version, uint64_t npoints){
     return dev_version;
 
 }  
+
+
 
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -1599,6 +1636,29 @@ int main(int argc, char **argv)
     point* result = new point;
     //find_nn(**head, points[5], &*result); 
     print_depth<<<1,1>>>(head);
+    uint64_t * misses;
+
+    cudaMallocManaged((void **)&misses, sizeof(uint64_t));
+
+    cudaDeviceSynchronize();
+
+    misses[0] = 0;
+
+
+    cudaDeviceSynchronize();
+
+    auto query_start = high_resolution_clock::now();
+
+    query_points<<<(nthreads-1)/256+1,256>>>(head, dev_points, npoints, misses);
+
+    cudaDeviceSynchronize();
+
+    auto query_end = high_resolution_clock::now();
+
+    std::cout << "queried " << npoints << " items in " << std::fixed << elapsed(query_start, query_end) << ", throughput " << 1.0*npoints/elapsed(query_start, query_end) << std::endl;
+
+    printf("Missed %llu/%llu\n", misses[0], npoints);
+    //print_depth<<<1,1>>>(head);
 
     cudaDeviceSynchronize();
 
