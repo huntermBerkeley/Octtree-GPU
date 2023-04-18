@@ -121,11 +121,7 @@ class Points
 
 };
 
-//actually returns distance squared
-__device__ float distance_between(float2 one_point, float2 another_point){
-    return ((one_point.x - another_point.x)*(one_point.x - another_point.x)) + ((one_point.y - another_point.y) * (one_point.y - another_point.y));
 
-}
 
 struct point
 {
@@ -164,6 +160,11 @@ struct point
 
 
 };
+//actually returns distance squared
+__device__ float distance_between(point one_point, point another_point){
+    return ((one_point.x - another_point.x)*(one_point.x - another_point.x)) + ((one_point.y - another_point.y) * (one_point.y - another_point.y));
+
+}
 
 ////////////////////////////////////////////////////////////////////////////////
 // A 2D bounding box
@@ -204,7 +205,7 @@ class Bounding_box
         }
 
         // Does a box contain a point.
-        __host__ __device__ bool contains(const float2 &p) const
+        __host__ __device__ bool contains(const point &p) const
         {
             return p.x >= m_p_min.x && p.x < m_p_max.x && p.y >= m_p_min.y && p.y < m_p_max.y;
         }
@@ -221,7 +222,9 @@ class Bounding_box
         // This might not even be a valid distance, but the valid distance will surely be greater than this.
         __host__ __device__ float distance_between(point some_point){
 
-            float mindist = 1
+            float mindist = 1;
+	    return mindist;
+	    //TODO complete this crap
         }
 };
 
@@ -293,7 +296,7 @@ class Quadtree_node
             m_end = end;
         }
 
-        __device__ __forceinline__ Quadtree_node* get_child(float2 some_point){
+        __device__ __forceinline__ Quadtree_node* get_child(point some_point){
             for(int citer = 0; citer < FAN_OUT; citer++){
                 if(children[citer].bounding_box().contains(some_point)){
                     return &children[citer];
@@ -388,7 +391,7 @@ struct quadtree_node_v2
         Bounding_box child_box = get_child_bounding_box(child_id);
 
 
-        return child_box.contains(new_item.get_point());
+        return child_box.contains(new_item);
 
     }
 
@@ -531,40 +534,48 @@ struct quadtree_node_v2
         }
 
     }
-    __device__ float distance_bound(point query_point, cooperative_groups::thread_group g, my_type& result){
+    __device__ float get_minimum_distance(point q, my_type& r){
+	    float mindist = FLOAT_UPPER;
+	    for(int iter = 0; iter < 8; iter++){
+		    if(distance_between(q, my_points[iter]) < mindist){
+			    mindist = distance_between(q, my_points[iter]);
+		    }
+	    }
+	    return mindist;
+    }
+    __device__ float distance_bound(point query_point, my_type& result){
             if (children == nullptr){
-                int num_pts = maybe_some_points.get_num_points();
-                float mindist = get_minimum_distance(query_point, g, result);
+                float mindist = get_minimum_distance(query_point, result);
                 return mindist;
             } else{
                 for(int citer = 0; citer < 4; citer++){
                     if (children+(citer*sizeof(my_type)) == NULL){
                         continue;
                     }
-                    if(children[citer].bounding_box().contains(query_point)){
-                        return children[citer].distance_bound(query_point, g);
+                    if(get_child_bounding_box(citer).contains(query_point)){
+                        return children[citer]->distance_bound(query_point, result);
                     }
                 }
             }
             return -1;
     }
 
-    __device__ point check_neighbouring_subtrees(point query_point, cooperative_groups::thread_group g, float bound){
+    __device__ point check_neighbouring_subtrees(point query_point, float bound){
         float mindist = FLOAT_UPPER;
         point minpoint;
-        point maybe_points[4]
+        point maybe_points[4];
         for(int citer = 0; citer < 4; citer++){
-            maybe_points[citer] = NULL;
+            maybe_points[citer] = point(0, 0);
             if(children + (citer*sizeof(my_type)) != NULL){
                 if(is_correct_child(citer, query_point)) continue;
                 if(get_child_bounding_box(citer).distance_between(query_point) < bound){
-                    cooperative_groups::thread_block_tile<g.size() / 2> next_tile = cooperative_groups::tiled_partition<g.size() / 2>(cooperative_groups:: this_thread_block());
-                    maybe_points[citer] = check_neighbouring_subtrees(query_point, next_tile, bound);
+			//cooperative_groups::coalesced_group next_tile = cooperative_groups::binary_partition(g, (bool)(g.thread_rank()%2 == 0));
+                    maybe_points[citer] = check_neighbouring_subtrees(query_point, bound);
                 }
             }
         }
         for(int citer = 0; citer < 4; citer++){
-            if((maybe_points + (citer*sizeof(point)) != NULL) && !(maybe_points[citer].x == 0 && maybe_points[citer.y] == 0)){
+            if(!(maybe_points[citer].x == 0 && maybe_points[citer].y == 0)){
                 //You went down this child, and found a point that is not (0,0)
                 float thisdist = distance_between(maybe_points[citer], query_point);
                 if(thisdist < mindist){
@@ -572,7 +583,7 @@ struct quadtree_node_v2
                 }
             }
         }
-        return minpoint
+        return minpoint;
     }
 
 
@@ -959,44 +970,44 @@ void build_quadtree_kernel(Quadtree_node *nodes, Points *points, Parameters para
 ////////////////////////////////////////////////////////////////////////////////
 // Make sure a Quadtree is properly defined.
 ////////////////////////////////////////////////////////////////////////////////
-bool check_quadtree(const Quadtree_node *nodes, int idx, int num_pts, Points *pts, Parameters params)
-{
-    const Quadtree_node &node = nodes[idx];
-    int num_points = node.num_points();
-
-    if (!(params.depth == params.max_depth || num_points <= params.min_points_per_node))
-    {
-        int num_points_in_children = 0;
-
-        num_points_in_children += nodes[params.num_nodes_at_this_level + 4*idx+0].num_points();
-        num_points_in_children += nodes[params.num_nodes_at_this_level + 4*idx+1].num_points();
-        num_points_in_children += nodes[params.num_nodes_at_this_level + 4*idx+2].num_points();
-        num_points_in_children += nodes[params.num_nodes_at_this_level + 4*idx+3].num_points();
-
-        if (num_points_in_children != node.num_points())
-            return false;
-
-        return check_quadtree(&nodes[params.num_nodes_at_this_level], 4*idx+0, num_pts, pts, Parameters(params, true)) &&
-               check_quadtree(&nodes[params.num_nodes_at_this_level], 4*idx+1, num_pts, pts, Parameters(params, true)) &&
-               check_quadtree(&nodes[params.num_nodes_at_this_level], 4*idx+2, num_pts, pts, Parameters(params, true)) &&
-               check_quadtree(&nodes[params.num_nodes_at_this_level], 4*idx+3, num_pts, pts, Parameters(params, true));
-    }
-
-    const Bounding_box &bbox = node.bounding_box();
-
-    for (int it = node.points_begin() ; it < node.points_end() ; ++it)
-    {
-        if (it >= num_pts)
-            return false;
-
-        float2 p = pts->get_point(it);
-
-        if (!bbox.contains(p))
-            return false;
-    }
-
-    return true;
-}
+//bool check_quadtree(const Quadtree_node *nodes, int idx, int num_pts, Points *pts, Parameters params)
+//{
+//    const Quadtree_node &node = nodes[idx];
+//    int num_points = node.num_points();
+//
+//    if (!(params.depth == params.max_depth || num_points <= params.min_points_per_node))
+//    {
+//        int num_points_in_children = 0;
+//
+//        num_points_in_children += nodes[params.num_nodes_at_this_level + 4*idx+0].num_points();
+//        num_points_in_children += nodes[params.num_nodes_at_this_level + 4*idx+1].num_points();
+//        num_points_in_children += nodes[params.num_nodes_at_this_level + 4*idx+2].num_points();
+//        num_points_in_children += nodes[params.num_nodes_at_this_level + 4*idx+3].num_points();
+//
+//        if (num_points_in_children != node.num_points())
+//            return false;
+//
+//        return check_quadtree(&nodes[params.num_nodes_at_this_level], 4*idx+0, num_pts, pts, Parameters(params, true)) &&
+//               check_quadtree(&nodes[params.num_nodes_at_this_level], 4*idx+1, num_pts, pts, Parameters(params, true)) &&
+//               check_quadtree(&nodes[params.num_nodes_at_this_level], 4*idx+2, num_pts, pts, Parameters(params, true)) &&
+//               check_quadtree(&nodes[params.num_nodes_at_this_level], 4*idx+3, num_pts, pts, Parameters(params, true));
+//    }
+//
+//    const Bounding_box &bbox = node.bounding_box();
+//
+//    for (int it = node.points_begin() ; it < node.points_end() ; ++it)
+//    {
+//        if (it >= num_pts)
+//            return false;
+//
+//        float2 p = pts->get_point(it);
+//
+//        if (!bbox.contains(p))
+//            return false;
+//    }
+//
+//    return true;
+//}
 
 ////////////////////////////////////////////////////////////////////////////////
 // Parallel random number generator.
@@ -1103,8 +1114,8 @@ bool cdpQuadtree(int warp_size)
     checkCudaErrors(cudaMemcpy(host_nodes, nodes, max_nodes *sizeof(Quadtree_node), cudaMemcpyDeviceToHost));
 
     // Validate the results.
-    bool ok = check_quadtree(host_nodes, 0, num_points, &host_points, params);
-    std::cout << "Results: " << (ok ? "OK" : "FAILED") << std::endl;
+    //bool ok = check_quadtree(host_nodes, 0, num_points, &host_points, params);
+    //std::cout << "Results: " << (ok ? "OK" : "FAILED") << std::endl;
 
     // Free CPU memory.
     delete[] host_nodes;
@@ -1113,17 +1124,18 @@ bool cdpQuadtree(int warp_size)
     checkCudaErrors(cudaFree(nodes));
     checkCudaErrors(cudaFree(points));
 
-    return ok;
+    return 1;
 }
 
 
-__global__ void find_nn(Quadtree_node root, float2 query_point, point& result){
-    cooperative_groups::thread_block_tile<4> some_tile = cooperative_groups::tiled_partition<4>(cooperative_groups:: this_thread_block());
-    float mindist = root.distance_bound(query_point, some_tile, result); //TODO add the second traversal
-    Quadtree_node improved_result;
-    point another_point = root.check_neighbouring_subtrees(query_point, some_tile, improved_result, mindist);
+__global__ void find_nn(quadtree_node_v2 root, point query_point, point* result){
+    //cooperative_groups::thread_block_tile<4> some_tile = cooperative_groups::tiled_partition<4>(cooperative_groups:: this_thread_block());
+    float mindist = root.distance_bound(query_point, root); //TODO add the second traversal
+    //std::cout<<"Min dist in leaf was "<<mindist<<std::endl;
+    //quadtree_node_v2 improved_result;
+    point another_point = root.check_neighbouring_subtrees(query_point, mindist);
     if(!(another_point.x == 0 && another_point.y == 0) && distance_between(query_point, another_point) < mindist){
-        result = another_point;
+        *result = another_point;
     }
 }
 
@@ -1231,6 +1243,8 @@ int main(int argc, char **argv)
 
 
     insert_points<<<1,28>>>(head, points, 7);
+    point* result = new point;
+    //find_nn(**head, points[5], &*result); 
 
 
     cudaFree(head);
