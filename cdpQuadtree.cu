@@ -185,13 +185,6 @@ __device__ float distance_between(point one_point, point another_point){
 
 }
 
-//cast points to float2 for comparison.
-//returns distance squared, should be ok as dist^2 is distance preserving.
-__device__ float distance_between(point one_point, point another_point){
-    return distance_between(one_point.get_point(), another_point.get_point());
-
-}
-
 ////////////////////////////////////////////////////////////////////////////////
 // A 2D bounding box
 ////////////////////////////////////////////////////////////////////////////////
@@ -236,10 +229,10 @@ class Bounding_box
             return p.x >= m_p_min.x && p.x < m_p_max.x && p.y >= m_p_min.y && p.y < m_p_max.y;
         }
 
-        __device__ bool contains(point p) const
-        {
-            return contains(p.get_point());
-        }
+        //__device__ bool contains(point p) const
+        //{
+        //    return contains(p.get_point());
+        //}
 
         // Define the bounding box.
         __host__ __device__ void set(float min_x, float min_y, float max_x, float max_y)
@@ -778,30 +771,28 @@ struct quadtree_node_v2
     __device__ point check_neighbouring_subtrees(point query_point, float bound){
         float mindist = FLOAT_UPPER;
         point minpoint;
-        point maybe_points[4];
-        for(int citer = 0; citer < 4; citer++){
-            maybe_points[citer] = point(0, 0);
-            if(children + (citer*sizeof(my_type)) != NULL){
-                if(is_correct_child(citer, query_point)) continue;
-                if(get_child_bounding_box(citer).distance_between(query_point) < bound){
-			//cooperative_groups::coalesced_group next_tile = cooperative_groups::binary_partition(g, (bool)(g.thread_rank()%2 == 0));
-                    maybe_points[citer] = check_neighbouring_subtrees(query_point, bound);
-                }
-            }
-        }
-        for(int citer = 0; citer < 4; citer++){
-            if(!(maybe_points[citer].x == 0 && maybe_points[citer].y == 0)){
-                //You went down this child, and found a point that is not (0,0)
-                float thisdist = distance_between(maybe_points[citer], query_point);
-                if(thisdist < mindist){
-                    minpoint = maybe_points[citer];
-                }
-            }
-        }
-        return minpoint;
-
-    __device__ float get_minimum_distance(point query_point, cooperative_groups::thread_group g, point & result){
-        return 0;
+	//TODO do this
+        //point maybe_points[4];
+        //for(int citer = 0; citer < 4; citer++){
+        //    maybe_points[citer] = point(0, 0);
+        //    if(children + (citer*sizeof(my_type)) != NULL){
+        //        if(is_correct_child(citer, query_point)) continue;
+        //        if(get_child_bounding_box(citer).distance_between(query_point) < bound){
+	//		//cooperative_groups::coalesced_group next_tile = cooperative_groups::binary_partition(g, (bool)(g.thread_rank()%2 == 0));
+        //            maybe_points[citer] = check_neighbouring_subtrees(query_point, bound);
+        //        }
+        //    }
+        //}
+        //for(int citer = 0; citer < 4; citer++){
+        //    if(!(maybe_points[citer].x == 0 && maybe_points[citer].y == 0)){
+        //        //You went down this child, and found a point that is not (0,0)
+        //        float thisdist = distance_between(maybe_points[citer], query_point);
+        //        if(thisdist < mindist){
+        //            minpoint = maybe_points[citer];
+        //        }
+        //    }
+        //}
+        //return minpoint;
     }
 
 
@@ -1632,7 +1623,7 @@ int main(int argc, char **argv)
 
 
 
-    insert_points<<<1,28>>>(head, points, 7);
+    //insert_points<<<1,28>>>(head, points, 7);
     point* result = new point;
     //find_nn(**head, points[5], &*result); 
     print_depth<<<1,1>>>(head);
