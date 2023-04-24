@@ -1910,7 +1910,7 @@ int main(int argc, char **argv)
 
     cudaDeviceSynchronize();
 
-    boot_allocator(20ULL*1024*1024*1024, 64);
+    boot_allocator(10ULL*1024*1024*1024, 64);
     quadtree_node_v2 ** head;
 
     cudaMallocManaged((void **)&head, sizeof(quadtree_node_v2 *));
@@ -1922,7 +1922,7 @@ int main(int argc, char **argv)
     cudaDeviceSynchronize();
 
 
-    uint64_t npoints = 1000000;
+    uint64_t npoints = 100000000;
 
     uint64_t nthreads = npoints*4;
 
