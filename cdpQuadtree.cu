@@ -321,7 +321,7 @@ class Bounding_box
         // Does a box contain a point.
         __host__ __device__ bool contains(const point &p) const
         {
-            return p.x >= m_p_min.x && p.x < m_p_max.x && p.y >= m_p_min.y && p.y < m_p_max.y;
+            return p.x >= m_p_min.x && p.x <= m_p_max.x && p.y >= m_p_min.y && p.y <= m_p_max.y;
         }
 
         //__device__ bool contains(point p) const
@@ -585,7 +585,7 @@ struct quadtree_node_v2
 
                 //printf("Tid %llu failed\n", tid);
 
-                //printf("tid %llu %llu, Failed to place point %f %f in child %f %f %f %f %d\n", threadIdx.x+blockIdx.x*blockDim.x, tid, new_item.x, new_item.y, child_box.m_p_min.x, child_box.m_p_max.x, child_box.m_p_min.y, child_box.m_p_max.y, child_box.contains(new_item));
+                printf("tid %llu %llu, Failed to place point %f %f in child %f %f %f %f %d\n", threadIdx.x+blockIdx.x*blockDim.x, tid, new_item.x, new_item.y, child_box.m_p_min.x, child_box.m_p_max.x, child_box.m_p_min.y, child_box.m_p_max.y, child_box.contains(new_item));
                 return false;
             }
 
@@ -595,7 +595,7 @@ struct quadtree_node_v2
 
             __threadfence();
             // either i have created a new child or someone else did, so we have a child
-            children[leader]->insert(insert_tile, new_item);
+            return children[leader]->insert(insert_tile, new_item);
     }
 
     __device__ bool insert(cg::thread_block_tile<4> insert_tile, point new_item){
@@ -615,7 +615,10 @@ struct quadtree_node_v2
         //to prevent reading from null, we cache old value.
         point * my_points_ptr = my_points;
 
-        if ( (uint64_t) my_points_ptr == ~0ULL) return false;
+        if ( (uint64_t) my_points_ptr == ~0ULL){
+            printf("Bug in reading old\n");
+            return false;
+        } 
 
 
         #if SANITY_CHECKS
@@ -641,11 +644,25 @@ struct quadtree_node_v2
             // add the points in my_points_
             if(own_my_points){
                 for(int i=0; i < 8; i++){
-                    maybe_insert_point(insert_tile, my_points_ptr[i]);
+
+
+                    if ((uint64_t) my_points_ptr[i] == ~0ULL) continue;
+
+                    if (!maybe_insert_point(insert_tile, my_points_ptr[i])){
+                        printf("Failed to move point down\n");
+                        return false;
+                    }
                 }
             }
         }
-        maybe_insert_point(insert_tile, new_item);
+
+
+        bool failed_on_final = maybe_insert_point(insert_tile, new_item);
+
+        if (!failed_on_final){
+            printf("Failed on inserting final point\n");
+        }
+        return failed_on_final;
         
        
         /*
@@ -874,7 +891,7 @@ struct quadtree_node_v2
 
     //main recursive call
     //float to leaf, then maybe recurse to subtrees
-    __device__ float find_nn(cg::thread_block_tile<4> tile, point query_point, point& closest_point){
+    __device__ float find_nn(cg::thread_block_tile<4> tile, point query_point, point& closest_point, bool & min_acquired){
 
 
         float distance = FLOAT_UPPER;
@@ -886,6 +903,12 @@ struct quadtree_node_v2
 
             //TODO: wasting work.
             distance = get_minimum_distance(query_point, closest_point);
+
+            if (!can_contain_match(tile, query_point, distance)){
+
+                min_acquired = true;
+
+            }
 
             return distance;
 
@@ -905,8 +928,15 @@ struct quadtree_node_v2
             //distance = FLOAT_UPPER;
         } else {
 
-            distance = children[recursive_child]->find_nn(tile, query_point, closest_point);
+            distance = children[recursive_child]->find_nn(tile, query_point, closest_point, min_acquired);
 
+        }
+
+
+        //here, do a check.
+
+        if (min_acquired){
+            return distance;
         }
 
 
@@ -929,6 +959,16 @@ struct quadtree_node_v2
             }
 
         }
+
+
+                //if ! contain match on myself, walls are so far away that we couldn't leave this box.
+        //therefore, no closer neighbor can be found.
+        if (!can_contain_match(tile, query_point, distance)){
+
+            min_acquired = true;
+
+        }
+
 
 
         return distance;
@@ -1658,8 +1698,10 @@ __global__ void find_nn_kernel(quadtree_node_v2 ** head, point * query_points, u
 
 
     quadtree_node_v2 * root = head[0];
+
+    bool bounded = false;
    
-    float distance = root->find_nn(tile, query_point, closest_point); //TODO add the second traversal
+    float distance = root->find_nn(tile, query_point, closest_point, bounded); //TODO add the second traversal
 
 
     // if (tile.thread_rank() == 0){
@@ -1919,6 +1961,10 @@ int main(int argc, char **argv)
     //insert_points<<<1,28>>>(head, points, 7);
     //point** result;
     //cudaMallocManaged((void **)&result, sizeof(point *)
+
+    cudaDeviceSynchronize();
+
+    print_depth<<<1,1>>>(head);
 
     cudaDeviceSynchronize();
 
