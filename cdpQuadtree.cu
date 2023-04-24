@@ -26,6 +26,8 @@
 
 #include <poggers/allocators/mem_pool.cuh>
 
+#include <cooperative_groups/reduce.h>
+
 //rand
 #include <random>
 #include <cstdlib>
@@ -49,6 +51,13 @@ double elapsed(high_resolution_clock::time_point t1, high_resolution_clock::time
    return (duration_cast<duration<double> >(t2 - t1)).count();
 }
 
+
+__device__ float get_dist_squared(float x, float y){
+
+    float result = (x-y);
+    return result*result;
+
+}
 
 //global vals
 
@@ -831,33 +840,159 @@ struct quadtree_node_v2
         }
 
     }
-    __device__ float get_minimum_distance(point q){
+    __device__ float get_minimum_distance(point q, point& closest_point){
 	    float mindist = FLOAT_UPPER;
 	    for(int iter = 0; iter < 8; iter++){
 		    if(distance_between(q, my_points[iter]) < mindist){
 			    mindist = distance_between(q, my_points[iter]);
+                closest_point = my_points[iter];
 		    }
 	    }
 	    return mindist;
     }
-    __device__ float distance_bound(point query_point){
 
-            if (my_points != nullptr){
-                float mindist = get_minimum_distance(query_point);
-                return mindist;
-            } else{
-                for(int citer = 0; citer < 4; citer++){
-                    if (children[citer] == NULL){
-                        continue;
-                    }
-                    if(get_child_bounding_box(citer).contains(query_point)){
 
-                        return children[citer]->distance_bound(query_point);
-                    }
-                }
-            }
-            return FLOAT_UPPER;
+    // __device__ float distance_bound(point query_point){
+
+    //         if (my_points != nullptr){
+    //             float mindist = get_minimum_distance(query_point);
+    //             return mindist;
+    //         } else{
+    //             for(int citer = 0; citer < 4; citer++){
+    //                 if (children[citer] == NULL){
+    //                     continue;
+    //                 }
+    //                 if(get_child_bounding_box(citer).contains(query_point)){
+
+    //                     return children[citer]->distance_bound(query_point);
+    //                 }
+    //             }
+    //         }
+    //         return FLOAT_UPPER;
+    // }
+
+
+    //main recursive call
+    //float to leaf, then maybe recurse to subtrees
+    __device__ void find_nn(cg::thread_block_tile<4> tile, point query_point, float& distance, point& closest_point){
+
+
+        //base case, find the item
+        //leaf node
+        if (my_points != nullptr){
+
+
+            //TODO: wasting work.
+            distance = get_minimum_distance(query_point, closest_point);
+
+            return;
+
+
+        }
+
+
+        Bounding_box child_box = get_child_bounding_box(tile.thread_rank());
+
+        bool is_valid = is_correct_child(tile.thread_rank(), query_point, child_box);
+        auto valid = tile.ballot(is_valid);
+
+        //recursive child is where next find_nn call is setup, if point exists it is in this subtree
+        int recursive_child = __ffs(valid)-1;
+
+        if (children[recursive_child] == nullptr){
+            //distance = FLOAT_UPPER;
+        } else {
+
+            children[recursive_child]->find_nn(tile, query_point, distance, closest_point);
+
+        }
+
+
+        for (int i = 0; i < 4; i++){
+
+            if (children[i] == nullptr) continue;
+            if (i == recursive_child) continue;
+
+            if (children[i]->can_contain_match(tile, query_point, distance)) children[i]->check_subtree(tile, query_point, distance, closest_point);
+
+        }
+
+
+
     }
+
+
+    //recurse and check subtree
+    //update distance if closer neighbor found.
+     __device__ void check_subtree( cg::thread_block_tile<4> tile, point query_point, float& distance, point & closest_point){
+
+        if (my_points != nullptr){
+
+            point local_closest;
+            float local_distance = get_minimum_distance(query_point, local_closest);
+
+            if (local_distance < distance){
+                distance = local_distance;
+                closest_point = local_closest;
+            }
+
+            return;
+
+        }
+
+        for (int i = 0; i < 4; i++){
+
+            if (children[i] == nullptr) continue;
+
+            if (children[i]->can_contain_match(tile, query_point, distance)) children[i]->check_subtree(tile, query_point, distance, closest_point);
+
+        }
+
+     }
+
+
+     //return true iff the box might contain a closer point
+     __device__ bool can_contain_match( cg::thread_block_tile<4> tile, point query_point, float distance){
+
+        //printf("Entering check\n");
+        #if SANITY_CHECKS
+
+        if (my_bounding_box.contains(query_point)){
+
+            printf("Recursed on incorrect child\n");
+            
+        }
+
+        #endif
+
+
+        int my_id = tile.thread_rank();
+
+        float my_wall = (my_id == 0)*my_bounding_box.m_p_min.x + (my_id == 1)*my_bounding_box.m_p_min.y + (my_id == 2)*my_bounding_box.m_p_max.x + (my_id == 3)*my_bounding_box.m_p_max.y;
+
+        bool is_p2 = (my_id % 2) == 0;
+        float my_point = (is_p2)*query_point.x + (!is_p2)*query_point.y;
+
+
+        float my_dist = get_dist_squared(my_wall, my_point);
+
+
+
+        bool can_traverse = (my_dist < distance);
+
+        if (can_traverse) printf("%f < %f\n", my_dist, distance);
+
+        can_traverse = tile.ballot(can_traverse);
+
+
+
+        if (!can_traverse){
+            printf("Pruned subtree\n");
+        }
+
+        return can_traverse;
+     }
+
 
     __device__ point check_neighbouring_subtrees(point query_point, float bound){
         float mindist = FLOAT_UPPER;
@@ -1458,20 +1593,46 @@ bool cdpQuadtree(int warp_size)
 }
 
 
-__global__ void find_nn(quadtree_node_v2 ** head, point query_point, float* result){
+// __global__ void find_nn(quadtree_node_v2 ** head, point query_point, float* result){
 
+
+
+//     quadtree_node_v2 * root = head[0];
+//     //cooperative_groups::thread_block_tile<4> some_tile = cooperative_groups::tiled_partition<4>(cooperative_groups:: this_thread_block());
+//     float mindist = root->distance_bound(query_point); //TODO add the second traversal
+//     *result = mindist;
+//     return; 
+//     //quadtree_node_v2 improved_result;
+//     // point another_point = root->check_neighbouring_subtrees(query_point, mindist);
+//     // if(!(another_point.x == 0 && another_point.y == 0) && distance_between(query_point, another_point) < mindist){
+//     //     *result = another_point;
+//     // }
+// }
+
+
+__global__ void find_nn_kernel(quadtree_node_v2 ** head, point query_point){
+
+
+    uint64_t tid = threadIdx.x+blockIdx.x*blockDim.x;
+
+    if (tid >=4) return;
+
+    auto tile = cg::tiled_partition<4>(cg::this_thread_block());
+
+    float distance = FLOAT_UPPER;
+
+    point closest_point;
 
 
     quadtree_node_v2 * root = head[0];
-    //cooperative_groups::thread_block_tile<4> some_tile = cooperative_groups::tiled_partition<4>(cooperative_groups:: this_thread_block());
-    float mindist = root->distance_bound(query_point); //TODO add the second traversal
-    *result = mindist;
-    return; 
-    //quadtree_node_v2 improved_result;
-    // point another_point = root->check_neighbouring_subtrees(query_point, mindist);
-    // if(!(another_point.x == 0 && another_point.y == 0) && distance_between(query_point, another_point) < mindist){
-    //     *result = another_point;
-    // }
+   
+    root->find_nn(tile, query_point, distance, closest_point); //TODO add the second traversal
+
+
+    if (tile.thread_rank() == 0){
+        printf("closest_point is %f away\n", distance);
+    }
+
 }
 
 __global__ void init_tree(quadtree_node_v2 ** root, int depth){
@@ -1724,43 +1885,33 @@ int main(int argc, char **argv)
 
     //insert_points<<<1,28>>>(head, points, 7);
     //point** result;
-    //cudaMallocManaged((void **)&result, sizeof(point *));
-    float * result;
-    cudaMallocManaged((void **)&result, sizeof(float));
+    //cudaMallocManaged((void **)&result, sizeof(point *)
+
+    cudaDeviceSynchronize();
+
+    cudaDeviceSynchronize();
+
+    find_nn_kernel<<<1, 4>>>(head, host_points[5]); 
 
 
     cudaDeviceSynchronize();
 
-    result[0] = FLOAT_UPPER;
-
-    cudaDeviceSynchronize();
-
-    find_nn<<<1, 28>>>(head, host_points[5], result); 
-
-
-    cudaDeviceSynchronize();
-    std::cout<<"called find_nn successfully"<<std::endl;
-    std::cout<<*result<<std::endl;
 
 
     point new_point = host_points[5];
 
-    new_point.y += .0001;
+    new_point.y += .01;
     cudaDeviceSynchronize();
 
-    result[0] = FLOAT_UPPER;
+    //result[0] = FLOAT_UPPER;
 
     cudaDeviceSynchronize();
 
     //print_depth<<<1,1>>>(head);
 
 
-    find_nn<<<1, 28>>>(head, new_point, result); 
+    find_nn_kernel<<<1, 4>>>(head, new_point); 
 
-
-    cudaDeviceSynchronize();
-    std::cout<<"called find_nn successfully"<<std::endl;
-    std::cout<< std::scientific << *result<<std::endl;
 
     cudaDeviceSynchronize();
 
