@@ -7,13 +7,17 @@
 
 #include <poggers/allocators/free_list.cuh>
 #include <poggers/representations/representation_helpers.cuh>
+//#include <poggers/allocators/uint64_bitarray.cuh>
 
 #include "stdio.h"
 #include "assert.h"
 
 #include <cooperative_groups.h>
+#include <cooperative_groups/reduce.h>
+#include <cooperative_groups/scan.h>
 
 namespace cg = cooperative_groups;
+
 
 
 //helper_macro
@@ -23,6 +27,9 @@ namespace cg = cooperative_groups;
   ((nbits) == 64 ? 0xffffffffffffffff : MAX_VALUE(nbits))
 
 #define SET_BIT_MASK(index) ((1ULL << index))
+
+
+#define BETA_UTIL_DEBUG 0
 
 
 

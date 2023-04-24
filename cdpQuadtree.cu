@@ -24,6 +24,7 @@
 
 #include <poggers/allocators/one_size_allocator.cuh>
 
+#include <poggers/allocators/mem_pool.cuh>
 
 //rand
 #include <random>
@@ -36,6 +37,8 @@ namespace cg = cooperative_groups;
 #define FLOAT_UPPER float(1<<30)
 
 #define SANITY_CHECKS 1
+
+#define CHECK_OVERLAP 0
 
 
 using namespace std::chrono;
@@ -51,21 +54,38 @@ double elapsed(high_resolution_clock::time_point t1, high_resolution_clock::time
 
 //using alloc_type = poggers::allocators::one_size_slab_allocator<4>;
 
-using alloc_type = poggers::allocators::one_size_allocator;
+using alloc_type = poggers::allocators::mem_pool<128>;
+
+//using alloc_type = poggers::allocators::one_size_allocator;
 
 __device__ alloc_type global_allocator;
 
+__device__ uint64_t * global_bitarray;
 
 
 __host__ void boot_allocator(uint64_t bytes_available, uint64_t alloc_size){
 
-    alloc_type * local_version = alloc_type::generate_on_device(bytes_available, alloc_size, 42);
+    alloc_type * local_version = alloc_type::generate_on_device(bytes_available, alloc_size);
 
     if (local_version == nullptr){
         printf("Allocator failed to acquire memory.\n");
     }
 
     cudaMemcpyToSymbol(global_allocator, local_version, sizeof(alloc_type));
+
+
+    uint64_t num_allocs = (bytes_available-1)/alloc_size+1;
+
+    uint64_t num_uints = (num_allocs-1)/64+1;
+
+
+    uint64_t * bits;
+
+    cudaMalloc((void **)&bits, sizeof(uint64_t)*num_uints);
+    cudaMemset(bits, 0, sizeof(uint64_t)*num_uints);
+
+    cudaMemcpyToSymbol(global_bitarray, &bits, sizeof(uint64_t *));
+
 
     cudaFree(local_version);
 
@@ -85,6 +105,69 @@ __host__ void free_allocator(){
     alloc_type::free_on_device(local_version);
 
     cudaDeviceSynchronize();
+
+}
+
+
+__device__ void * get_allocation(){
+
+
+    while (true){
+
+
+        void * alloc = global_allocator.malloc();
+
+        if (alloc == nullptr){
+            printf("Out of memory\n");
+            return nullptr;
+        }
+
+        #if CHECK_OVERLAP
+
+        uint64_t offset = global_allocator.get_offset_from_ptr(alloc);
+
+        uint64_t high = offset / 64;
+        uint64_t low = offset % 64;
+
+        uint64_t mask = (1ULL << low);
+
+        if (atomicOr((unsigned long long int *)&global_bitarray[high], mask) & mask){
+
+            //double alloc
+            //printf("Double alloc at address %llu\n", offset);
+            continue;
+
+        } else {
+            return alloc;
+        }
+
+        #else
+
+        return alloc;
+
+        #endif
+
+    }
+
+}
+
+__device__ void free_allocation(void * alloc){
+
+
+    #if CHECK_OVERLAP
+
+    uint64_t offset = global_allocator.get_offset_from_ptr(alloc);
+
+    uint64_t high = offset / 64;
+    uint64_t low = offset % 64;
+
+    uint64_t mask = ~(1ULL << low);
+
+    atomicAnd((unsigned long long int *)&global_bitarray[high], mask);
+
+    #endif
+
+    global_allocator.free(alloc);
 
 }
 
@@ -523,6 +606,8 @@ struct quadtree_node_v2
         //to prevent reading from null, we cache old value.
         point * my_points_ptr = my_points;
 
+        if ( (uint64_t) my_points_ptr == ~0ULL) return false;
+
 
         #if SANITY_CHECKS
         point * lead_my_points_ptr = insert_tile.shfl(my_points_ptr, 0);
@@ -626,7 +711,7 @@ struct quadtree_node_v2
                 my_type * new_child;
 
                 if (insert_tile.thread_rank() == 0){
-                    new_child = (my_type *) global_allocator.malloc();
+                    new_child = (my_type *) get_allocation();
 
                     if (new_child == nullptr){
                         printf("Alloc failure in init.\n");
@@ -665,7 +750,7 @@ struct quadtree_node_v2
 
         if (insert_tile.thread_rank() < 2){
 
-            allocation = global_allocator.malloc();
+            allocation = get_allocation();
 
             if (allocation == nullptr){
                 printf("Out of memory\n");
@@ -738,7 +823,8 @@ struct quadtree_node_v2
 
             if (insert_tile.thread_rank() < 2){
 
-                global_allocator.free(allocation);
+                free_allocation(allocation);
+                //global_allocator.free(allocation);
 
             }
 
@@ -1407,7 +1493,7 @@ __global__ void init_tree(quadtree_node_v2 ** root, int depth){
     if (my_tile.thread_rank() == 0){
 
 
-        new_node = (quadtree_node_v2 *) global_allocator.malloc();
+        new_node = (quadtree_node_v2 *) get_allocation();
 
 
         //void * memory = global_allocator.malloc();
@@ -1588,7 +1674,7 @@ int main(int argc, char **argv)
 
     cudaDeviceSynchronize();
 
-    boot_allocator(80000000+2000, 64);
+    boot_allocator(20ULL*1024*1024*1024, 64);
     quadtree_node_v2 ** head;
 
     cudaMallocManaged((void **)&head, sizeof(quadtree_node_v2 *));
@@ -1600,7 +1686,7 @@ int main(int argc, char **argv)
     cudaDeviceSynchronize();
 
 
-    uint64_t npoints = 1000;
+    uint64_t npoints = 100000000;
 
     uint64_t nthreads = npoints*4;
 
@@ -1612,6 +1698,9 @@ int main(int argc, char **argv)
 
     // cudaDeviceSynchronize();
 
+    printf("Starting Kernel\n");
+
+    cudaDeviceSynchronize();
 
     // for (int i = 0; i < 8; i++){
 

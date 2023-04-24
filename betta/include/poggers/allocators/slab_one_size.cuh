@@ -271,11 +271,6 @@ struct one_size_slab_allocator {
 
    			} else {
 
-
-   				if (allocation == one_size_allocator::fail()){
-   					printf("Alloc failure\n");
-   				}
-
    				return (void *) (extra_memory + allocation*offset_size);
 
 

@@ -76,6 +76,8 @@ ConfigureExecutable(beta_block_tests "${CMAKE_CURRENT_SOURCE_DIR}/src/beta_block
 
 ConfigureExecutable(delete_tests "${CMAKE_CURRENT_SOURCE_DIR}/src/delete_tests.cu" "${POGGERS_TESTS_BINARY_DIR}")
 
+ConfigureExecutable(block_tests "${CMAKE_CURRENT_SOURCE_DIR}/src/block_tests.cu" "${POGGERS_TESTS_BINARY_DIR}")
+
 ConfigureExecutable(sub_veb_tests "${CMAKE_CURRENT_SOURCE_DIR}/src/sub_veb_tests.cu" "${POGGERS_TESTS_BINARY_DIR}")
 
 ConfigureExecutable(slab_one_size_tests "${CMAKE_CURRENT_SOURCE_DIR}/src/slab_one_size_tests.cu" "${POGGERS_TESTS_BINARY_DIR}")
