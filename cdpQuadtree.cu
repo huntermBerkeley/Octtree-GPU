@@ -1962,13 +1962,13 @@ int main(int argc, char **argv)
     //point** result;
     //cudaMallocManaged((void **)&result, sizeof(point *)
 
-    cudaDeviceSynchronize();
+    //cudaDeviceSynchronize();
 
-    print_depth<<<1,1>>>(head);
+    //print_depth<<<1,1>>>(head);
 
-    cudaDeviceSynchronize();
+    //cudaDeviceSynchronize();
 
-    cudaDeviceSynchronize();
+    //cudaDeviceSynchronize();
 
     auto nn_start = high_resolution_clock::now();
 
@@ -2031,6 +2031,24 @@ int main(int argc, char **argv)
 
 
     cudaDeviceSynchronize();
+
+    point * non_existant_points = generate_random_points(npoints);
+
+    cudaMemcpy(dev_points, non_existant_points, sizeof(point)*npoints, cudaMemcpyHostToDevice);
+
+    cudaDeviceSynchronize();
+
+    nn_start = high_resolution_clock::now();
+
+    find_nn_kernel<<<(nthreads-1)/256+1,256>>>(head, dev_points, npoints); 
+
+
+    cudaDeviceSynchronize();
+
+    nn_end = high_resolution_clock::now();
+
+    std::cout << "Nearest Neighbors " << npoints << " items in " << std::fixed << elapsed(nn_start, nn_end) << ", throughput " << 1.0*npoints/elapsed(nn_start, nn_end) << std::endl;
+
 
 
     // uint64_t nodes_to_boot = 10000000;
