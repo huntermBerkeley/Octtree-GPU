@@ -38,7 +38,7 @@ namespace cg = cooperative_groups;
 #define FAN_OUT 4
 #define FLOAT_UPPER float(1<<30)
 
-#define SANITY_CHECKS 1
+#define SANITY_CHECKS 0
 
 #define CHECK_OVERLAP 0
 
@@ -874,8 +874,10 @@ struct quadtree_node_v2
 
     //main recursive call
     //float to leaf, then maybe recurse to subtrees
-    __device__ void find_nn(cg::thread_block_tile<4> tile, point query_point, float& distance, point& closest_point){
+    __device__ float find_nn(cg::thread_block_tile<4> tile, point query_point, point& closest_point){
 
+
+        float distance = FLOAT_UPPER;
 
         //base case, find the item
         //leaf node
@@ -885,7 +887,7 @@ struct quadtree_node_v2
             //TODO: wasting work.
             distance = get_minimum_distance(query_point, closest_point);
 
-            return;
+            return distance;
 
 
         }
@@ -903,19 +905,33 @@ struct quadtree_node_v2
             //distance = FLOAT_UPPER;
         } else {
 
-            children[recursive_child]->find_nn(tile, query_point, distance, closest_point);
+            distance = children[recursive_child]->find_nn(tile, query_point, closest_point);
 
         }
 
+
+        // if (distance != 0){
+        //     printf("Dist is not 0\n");
+        // }
 
         for (int i = 0; i < 4; i++){
 
             if (children[i] == nullptr) continue;
             if (i == recursive_child) continue;
 
-            if (children[i]->can_contain_match(tile, query_point, distance)) children[i]->check_subtree(tile, query_point, distance, closest_point);
+            if (children[i]->can_contain_match(tile, query_point, distance)){
+
+
+                float subtree_distance = children[i]->check_subtree(tile, query_point, distance, closest_point);
+
+
+                if (subtree_distance < distance) distance = subtree_distance;
+            }
 
         }
+
+
+        return distance;
 
 
 
@@ -924,7 +940,7 @@ struct quadtree_node_v2
 
     //recurse and check subtree
     //update distance if closer neighbor found.
-     __device__ void check_subtree( cg::thread_block_tile<4> tile, point query_point, float& distance, point & closest_point){
+     __device__ float check_subtree( cg::thread_block_tile<4> tile, point query_point, float distance, point & closest_point){
 
         if (my_points != nullptr){
 
@@ -936,7 +952,7 @@ struct quadtree_node_v2
                 closest_point = local_closest;
             }
 
-            return;
+            return distance;
 
         }
 
@@ -944,9 +960,18 @@ struct quadtree_node_v2
 
             if (children[i] == nullptr) continue;
 
-            if (children[i]->can_contain_match(tile, query_point, distance)) children[i]->check_subtree(tile, query_point, distance, closest_point);
+            if (children[i]->can_contain_match(tile, query_point, distance)){
+
+                float subtree_distance = children[i]->check_subtree(tile, query_point, distance, closest_point);
+
+                if (subtree_distance < distance) distance = subtree_distance;
+
+            }
 
         }
+
+
+        return distance;
 
      }
 
@@ -980,17 +1005,17 @@ struct quadtree_node_v2
 
         bool can_traverse = (my_dist < distance);
 
-        if (can_traverse) printf("%f < %f\n", my_dist, distance);
+        //if (can_traverse) printf("%f < %f\n", my_dist, distance);
 
-        can_traverse = tile.ballot(can_traverse);
+        auto ballot_result = tile.ballot(can_traverse);
 
 
 
-        if (!can_traverse){
-            printf("Pruned subtree\n");
-        }
+        // if (!can_traverse){
+        //     printf("Pruned subtree\n");
+        // }
 
-        return can_traverse;
+        return ballot_result;
      }
 
 
@@ -1610,28 +1635,36 @@ bool cdpQuadtree(int warp_size)
 // }
 
 
-__global__ void find_nn_kernel(quadtree_node_v2 ** head, point query_point){
+__global__ void find_nn_kernel(quadtree_node_v2 ** head, point * query_points, uint64_t npoints){
 
 
     uint64_t tid = threadIdx.x+blockIdx.x*blockDim.x;
 
-    if (tid >=4) return;
+
+    uint64_t tile_id = tid/4;
+
+
+    if (tile_id >= npoints) return;
+
+
+    point query_point = query_points[tile_id];
+
 
     auto tile = cg::tiled_partition<4>(cg::this_thread_block());
 
-    float distance = FLOAT_UPPER;
+    
 
     point closest_point;
 
 
     quadtree_node_v2 * root = head[0];
    
-    root->find_nn(tile, query_point, distance, closest_point); //TODO add the second traversal
+    float distance = root->find_nn(tile, query_point, closest_point); //TODO add the second traversal
 
 
-    if (tile.thread_rank() == 0){
-        printf("closest_point is %f away\n", distance);
-    }
+    // if (tile.thread_rank() == 0){
+    //     printf("closest_point is %f away\n", distance);
+    // }
 
 }
 
@@ -1847,7 +1880,7 @@ int main(int argc, char **argv)
     cudaDeviceSynchronize();
 
 
-    uint64_t npoints = 100000000;
+    uint64_t npoints = 1000000;
 
     uint64_t nthreads = npoints*4;
 
@@ -1891,16 +1924,22 @@ int main(int argc, char **argv)
 
     cudaDeviceSynchronize();
 
-    find_nn_kernel<<<1, 4>>>(head, host_points[5]); 
+    auto nn_start = high_resolution_clock::now();
+
+    find_nn_kernel<<<(nthreads-1)/256+1,256>>>(head, dev_points, npoints); 
 
 
     cudaDeviceSynchronize();
 
+    auto nn_end = high_resolution_clock::now();
+
+    std::cout << "Nearest Neighbors " << npoints << " items in " << std::fixed << elapsed(nn_start, nn_end) << ", throughput " << 1.0*npoints/elapsed(nn_start, nn_end) << std::endl;
 
 
-    point new_point = host_points[5];
 
-    new_point.y += .01;
+    //point new_point = host_points[5];
+
+    //new_point.y += .01;
     cudaDeviceSynchronize();
 
     //result[0] = FLOAT_UPPER;
@@ -1910,34 +1949,34 @@ int main(int argc, char **argv)
     //print_depth<<<1,1>>>(head);
 
 
-    find_nn_kernel<<<1, 4>>>(head, new_point); 
+    //find_nn_kernel<<<1, 4>>>(head, new_point); 
 
 
     cudaDeviceSynchronize();
 
 
-    // uint64_t * misses;
+    uint64_t * misses;
 
-    // cudaMallocManaged((void **)&misses, sizeof(uint64_t));
+    cudaMallocManaged((void **)&misses, sizeof(uint64_t));
 
-    // cudaDeviceSynchronize();
+    cudaDeviceSynchronize();
 
-    // misses[0] = 0;
+    misses[0] = 0;
 
 
-    // cudaDeviceSynchronize();
+    cudaDeviceSynchronize();
 
-    // auto query_start = high_resolution_clock::now();
+    auto query_start = high_resolution_clock::now();
 
-    // query_points<<<(nthreads-1)/256+1,256>>>(head, dev_points, npoints, misses);
+    query_points<<<(nthreads-1)/256+1,256>>>(head, dev_points, npoints, misses);
 
-    // cudaDeviceSynchronize();
+    cudaDeviceSynchronize();
 
-    // auto query_end = high_resolution_clock::now();
+    auto query_end = high_resolution_clock::now();
 
-    // std::cout << "queried " << npoints << " items in " << std::fixed << elapsed(query_start, query_end) << ", throughput " << 1.0*npoints/elapsed(query_start, query_end) << std::endl;
+    std::cout << "queried " << npoints << " items in " << std::fixed << elapsed(query_start, query_end) << ", throughput " << 1.0*npoints/elapsed(query_start, query_end) << std::endl;
 
-    // printf("Missed %llu/%llu\n", misses[0], npoints);
+    printf("Missed %llu/%llu\n", misses[0], npoints);
     // //print_depth<<<1,1>>>(head);
 
     // cudaDeviceSynchronize();
