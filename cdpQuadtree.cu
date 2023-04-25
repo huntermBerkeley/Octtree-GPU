@@ -691,7 +691,6 @@ struct quadtree_node_v2
         */
     }
 
-
     __device__ int probe_max_depth(){
 
         int depth = 0;
@@ -710,6 +709,29 @@ struct quadtree_node_v2
 
 
         return depth;
+
+
+    }
+    __device__ uint64_t probe_mem_size(){
+
+        uint64_t my_space = 64;
+        if(my_points != nullptr){
+            return my_space + 64;
+        }
+
+        for (int i=0; i < 4; i++){
+
+            if (children[i] != nullptr){
+
+
+                my_space += children[i]->probe_mem_size();
+
+
+            }
+        }
+
+
+        return my_space;
 
 
     }
@@ -1831,6 +1853,15 @@ __global__ void print_depth(quadtree_node_v2 ** head){
     printf("Max depth is %d\n", depth);
 }
 
+__global__ void print_mem(quadtree_node_v2 ** head){
+    uint64_t tid = threadIdx.x+blockIdx.x*blockDim.x;
+
+    if (tid != 0) return;
+
+    uint64_t size = head[0]->probe_mem_size();
+
+    printf("Memory Usage is %llu bytes\n", size);
+}
 
 __global__ void boot_many_nodes(uint64_t n_nodes){
 
@@ -1922,7 +1953,7 @@ int main(int argc, char **argv)
     cudaDeviceSynchronize();
 
 
-    uint64_t npoints = 100000000;
+    uint64_t npoints = 1000000;
 
     uint64_t nthreads = npoints*4;
 
@@ -1990,10 +2021,8 @@ int main(int argc, char **argv)
 
     //result[0] = FLOAT_UPPER;
 
-    cudaDeviceSynchronize();
-
     //print_depth<<<1,1>>>(head);
-
+    print_mem<<<1,1>>>(head);
 
     //find_nn_kernel<<<1, 4>>>(head, new_point); 
 
@@ -2024,9 +2053,7 @@ int main(int argc, char **argv)
 
     printf("Missed %llu/%llu\n", misses[0], npoints);
     // //print_depth<<<1,1>>>(head);
-
-    // cudaDeviceSynchronize();
-
+    
     // cudaFree(head);
 
 
