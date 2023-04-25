@@ -35,14 +35,15 @@ include(cmake/ConfigureExecutable.cmake)
 
 ## Package Target
 
+set(CPM_SOURCE_CACHE "${CMAKE_CURRENT_SOURCE_DIR}/downloaded_libraries")
 
 ## Package Target
 
-add_subdirectory(betta)
-
-add_library(quad_lib cdpQuadtree.cu)
-
-target_link_libraries(quad_lib INTERFACE poggers)
+CPMAddPackage(
+  NAME poggers
+  GITHUB_REPOSITORY huntermBerkeley/poggers
+  GIT_TAG origin/main
+)
 
 
 set(CMAKE_CXX_STANDARD 17)
@@ -50,20 +51,12 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_C_COMPILER $ENV{CC})
 set(CMAKE_CXX_COMPILER $ENV{CXX})
-set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -G -g")
+set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS}")
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}") 
 
 option(POGGERS_BUILD_TESTS "Configure CMake to build tests" OFF)
 
 ConfigureExecutable(cdpQuadtree "${CMAKE_CURRENT_SOURCE_DIR}/cdpQuadtree.cu" "${CMAKE_BINARY_DIR}")
 
-
-target_link_libraries(cdpQuadtree INTERFACE poggers)
-
-ConfigureExecutable(test "${CMAKE_CURRENT_SOURCE_DIR}/test.cu" "${CMAKE_BINARY_DIR}")
-
 set_property(TARGET cdpQuadtree PROPERTY CUDA_SEPARABLE_COMPILATION ON)
-
-
-target_link_libraries(test PRIVATE quad_lib)
 

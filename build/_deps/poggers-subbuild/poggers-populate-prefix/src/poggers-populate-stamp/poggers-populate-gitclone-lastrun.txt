@@ -1,0 +1,15 @@
+# This is a generated file and its contents are an internal implementation detail.
+# The download step will be re-executed if anything in this file changes.
+# No other meaning or use of this file is supported.
+
+method=git
+command=/usr/bin/cmake;-P;/home/hunter/work/old_oct/Octtree-GPU/build/_deps/poggers-subbuild/poggers-populate-prefix/tmp/poggers-populate-gitclone.cmake
+source_dir=/home/hunter/work/old_oct/Octtree-GPU/downloaded_libraries/poggers/6c190b04dd3b6316da6a18ab9e6032f078577d7b
+work_dir=/home/hunter/work/old_oct/Octtree-GPU/downloaded_libraries/poggers
+repository=https://github.com/huntermBerkeley/poggers.git
+remote=origin
+init_submodules=TRUE
+recurse_submodules=--recursive
+submodules=
+CMP0097=NEW
+

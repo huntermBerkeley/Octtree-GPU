@@ -1,0 +1,46 @@
+{
+	"sources" : 
+	[
+		{
+			"file" : "/home/hunter/work/old_oct/Octtree-GPU/build/_deps/poggers-subbuild/CMakeFiles/poggers-populate"
+		},
+		{
+			"file" : "/home/hunter/work/old_oct/Octtree-GPU/build/_deps/poggers-subbuild/CMakeFiles/poggers-populate.rule"
+		},
+		{
+			"file" : "/home/hunter/work/old_oct/Octtree-GPU/build/_deps/poggers-subbuild/CMakeFiles/poggers-populate-complete.rule"
+		},
+		{
+			"file" : "/home/hunter/work/old_oct/Octtree-GPU/build/_deps/poggers-subbuild/poggers-populate-prefix/src/poggers-populate-stamp/poggers-populate-build.rule"
+		},
+		{
+			"file" : "/home/hunter/work/old_oct/Octtree-GPU/build/_deps/poggers-subbuild/poggers-populate-prefix/src/poggers-populate-stamp/poggers-populate-configure.rule"
+		},
+		{
+			"file" : "/home/hunter/work/old_oct/Octtree-GPU/build/_deps/poggers-subbuild/poggers-populate-prefix/src/poggers-populate-stamp/poggers-populate-download.rule"
+		},
+		{
+			"file" : "/home/hunter/work/old_oct/Octtree-GPU/build/_deps/poggers-subbuild/poggers-populate-prefix/src/poggers-populate-stamp/poggers-populate-install.rule"
+		},
+		{
+			"file" : "/home/hunter/work/old_oct/Octtree-GPU/build/_deps/poggers-subbuild/poggers-populate-prefix/src/poggers-populate-stamp/poggers-populate-mkdir.rule"
+		},
+		{
+			"file" : "/home/hunter/work/old_oct/Octtree-GPU/build/_deps/poggers-subbuild/poggers-populate-prefix/src/poggers-populate-stamp/poggers-populate-patch.rule"
+		},
+		{
+			"file" : "/home/hunter/work/old_oct/Octtree-GPU/build/_deps/poggers-subbuild/poggers-populate-prefix/src/poggers-populate-stamp/poggers-populate-test.rule"
+		},
+		{
+			"file" : "/home/hunter/work/old_oct/Octtree-GPU/build/_deps/poggers-subbuild/poggers-populate-prefix/src/poggers-populate-stamp/poggers-populate-update.rule"
+		}
+	],
+	"target" : 
+	{
+		"labels" : 
+		[
+			"poggers-populate"
+		],
+		"name" : "poggers-populate"
+	}
+}
